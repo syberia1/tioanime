@@ -1,0 +1,30 @@
+{
+  "id": "tioanime",
+  "name": "TioAnime",
+  "version": "1.0.0",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Anime subtitulado en español de TioAnime, con los servidores Voe y YourUpload.",
+  "author": "tu-usuario-de-github",
+  "hosts": ["tioanime.com", "*.tioanime.com"],
+  "fetchHosts": "any",
+  "streamHosts": "any",
+  "capabilities": ["search", "home", "browse", "episodes", "resolve"],
+  "categories": ["anime"],
+  "discoverable": true,
+  "debug": false,
+  "color": "#263DFF",
+  "settings": [
+    {
+      "key": "server",
+      "label": "Servidor preferido",
+      "type": "select",
+      "default": "voe",
+      "hint": "El otro queda en el menú Servidor del reproductor.",
+      "options": [
+        { "value": "voe", "label": "Voe" },
+        { "value": "yourupload", "label": "YourUpload" }
+      ]
+    }
+  ]
+}
