@@ -173,7 +173,8 @@ function cardsFrom(html) {
     let title = (h3 && h3.text) || (img && img.attrs.alt) || link.text || "";
     title = title.replace(/\s+/g, " ").trim();
     if (isEpisode) title = title.replace(/\s+\d+$/, "");
-    const src = img ? img.attrs.src || img.attrs["data-src"] || "" : "";
+    // La imagen de una tarjeta de capítulo es una captura, no la carátula: no se usa.
+    const src = img && !isEpisode ? img.attrs.src || img.attrs["data-src"] || "" : "";
     const item = mkItem(slug, title, src ? abs(src) : "");
     if (!item) continue;
     seen[slug] = true;
@@ -186,12 +187,60 @@ function hasNextPage(html, page) {
   return new RegExp("[?&;]p=" + (page + 1) + "(?![0-9])").test(html);
 }
 
-function dirUrl(kind, page, query) {
-  let u = BASE + "/directorio?";
-  if (query) u += "q=" + encodeURIComponent(query) + "&";
-  if (kind === "type:1" || kind === "type:2" || kind === "type:3") u += "type%5B%5D=" + kind.slice(5) + "&";
-  if (page > 1) u += "p=" + page;
-  return u.replace(/[?&]$/, "");
+function dirUrl(kind, page, query, statusParam) {
+  const parts = [];
+  if (query) parts.push("q=" + encodeURIComponent(query));
+  if (kind === "type:1") parts.push("type%5B%5D=1");
+  if (kind === "status:1" && statusParam) parts.push(statusParam);
+  if (page > 1) parts.push("p=" + page);
+  return BASE + "/directorio" + (parts.length ? "?" + parts.join("&") : "");
+}
+
+function maxPage(html) {
+  let top = 0;
+  const re = /[?&;]p=(\d+)/g;
+  let x;
+  while ((x = re.exec(html))) top = Math.max(top, parseInt(x[1], 10));
+  return top;
+}
+
+// El filtro "En emisión" del directorio: se prueban los nombres de parámetro más probables y se
+// guarda el que de verdad cambia el listado (menos páginas que el directorio completo).
+const STATUS_VARIANTS = ["status=1", "status%5B%5D=1", "estado=1", "estado%5B%5D=1"];
+
+async function statusParam() {
+  let saved = null;
+  try {
+    saved = kino.storage.get("statusParam");
+  } catch (e) {
+    saved = null;
+  }
+  if (saved) return saved === "none" ? "" : saved;
+  const all = await getPage(dirUrl("dir:all", 1));
+  const allMax = maxPage(all.html);
+  let found = "none";
+  for (const v of STATUS_VARIANTS) {
+    try {
+      const page = await getPage(dirUrl("status:1", 1, "", v));
+      if (cardsFrom(page.html).length && maxPage(page.html) !== allMax) {
+        found = v;
+        break;
+      }
+    } catch (e) {
+      kino.log("estado: " + v + " no sirvió");
+    }
+  }
+  try {
+    kino.storage.set("statusParam", found, found === "none" ? { ttlMs: 3600000 } : undefined);
+  } catch (e) {
+    /* sin caché */
+  }
+  return found === "none" ? "" : found;
+}
+
+async function statusPage(pageNo) {
+  const v = await statusParam();
+  return getPage(v ? dirUrl("status:1", pageNo, "", v) : dirUrl("dir:all", pageNo));
 }
 
 // ---------- 5. search, home, browse ----------
@@ -204,25 +253,19 @@ export async function search(query) {
 }
 
 export async function home() {
+  const en = lang() === "en";
   const defs = [
-    { id: "ultimos-episodios", title: lang() === "en" ? "Latest episodes" : "Últimos episodios", url: BASE + "/", pick: "ul.episodes" },
-    { id: "animes", title: lang() === "en" ? "Anime" : "Animes", url: dirUrl("", 1), ref: "dir:all" },
-    { id: "peliculas", title: lang() === "en" ? "Movies" : "Películas", url: dirUrl("type:1", 1), ref: "type:1", genre: "peliculas" },
-    { id: "ovas", title: "OVAs", url: dirUrl("type:2", 1), ref: "type:2" },
+    { id: "en-emision", title: en ? "Airing now" : "En emisión", ref: "status:1", genre: "anime", load: () => statusPage(1) },
+    { id: "animes", title: en ? "Anime" : "Animes", ref: "dir:all", load: () => getPage(dirUrl("dir:all", 1)) },
+    { id: "peliculas", title: en ? "Movies" : "Películas", ref: "type:1", genre: "peliculas", load: () => getPage(dirUrl("type:1", 1)) },
   ];
   const rows = await Promise.all(
     defs.map(async (d) => {
       try {
-        const page = await getPage(d.url);
-        let html = page.html;
-        if (d.pick) {
-          const ul = kino.html.select(html, d.pick)[0];
-          if (ul) html = ul.html;
-        }
-        const items = cardsFrom(html).slice(0, 40);
+        const page = await d.load();
+        const items = cardsFrom(page.html).slice(0, 40);
         if (!items.length) return null;
-        const row = { id: d.id, title: d.title, items };
-        if (d.ref) row.ref = d.ref;
+        const row = { id: d.id, title: d.title, items, ref: d.ref };
         if (d.genre) row.genre = d.genre;
         return row;
       } catch (e) {
@@ -236,10 +279,10 @@ export async function home() {
 
 export async function browse(ref, cursor) {
   const kind = String(ref);
-  if (kind !== "dir:all" && !/^type:[123]$/.test(kind)) throw fail("not_found", "browse " + kind, "notFound");
+  if (!/^(dir:all|type:1|status:1)$/.test(kind)) throw fail("not_found", "browse " + kind, "notFound");
   const n = parseInt(cursor, 10);
   const pageNo = n > 0 ? n : 1;
-  const page = await getPage(dirUrl(kind, pageNo));
+  const page = kind === "status:1" ? await statusPage(pageNo) : await getPage(dirUrl(kind, pageNo));
   const items = cardsFrom(page.html);
   const out = { items };
   if (items.length && hasNextPage(page.html, pageNo)) out.next = String(pageNo + 1);
@@ -254,6 +297,118 @@ function parseList(src) {
   let m;
   while ((m = re.exec(src))) out.push(m[1] !== undefined ? m[1] : m[2]);
   return out;
+}
+
+// Imagen y resumen por capítulo: TioAnime no los da, así que se piden a TMDB con kino.tmdb
+// (Kino pone la llave). Si algo falla, los capítulos salen igual, sin imagen ni resumen.
+
+const TMDB_IMG = "https://image.tmdb.org/t/p/w300";
+
+function splitTitle(title) {
+  let season = 1;
+  let base = String(title);
+  let marked = false;
+  let m = /\b(\d+)(?:st|nd|rd|th)\s+season\b/i.exec(base) || /\bseason\s+(\d+)\b/i.exec(base);
+  if (m) {
+    season = parseInt(m[1], 10);
+    base = base.replace(m[0], " ");
+    marked = true;
+  } else {
+    m = /\s(II|III|IV|V|VI)$/.exec(base);
+    if (m) {
+      season = { II: 2, III: 3, IV: 4, V: 5, VI: 6 }[m[1]];
+      base = base.replace(/\s(II|III|IV|V|VI)$/, "");
+      marked = true;
+    }
+  }
+  base = base.replace(/\(\d{4}\)/g, " ").replace(/\s+/g, " ").trim();
+  return { base, season, marked };
+}
+
+function pickShow(results, year, season) {
+  const list = (results || []).filter((r) => r && r.id);
+  const anim = list.filter((r) => (r.genre_ids || []).indexOf(16) >= 0);
+  for (const r of anim.length ? anim : list) {
+    const y = parseInt(String(r.first_air_date || "").slice(0, 4), 10);
+    if (!year || !y) return r;
+    if (season > 1 ? y <= year : Math.abs(y - year) <= 1) return r;
+  }
+  return null;
+}
+
+async function tmdbSeason(id, season, language) {
+  const d = await kino.tmdb("/tv/" + id + "/season/" + season, { language });
+  return (d && d.episodes) || [];
+}
+
+// number -> { name, overview, still, air, rt } con la numeración de TioAnime.
+async function tmdbEpisodes(title, year, maxNum) {
+  const sp = splitTitle(title);
+  if (sp.base.length < 2) return {};
+  const found = await kino.tmdb("/search/tv", { query: sp.base, language: "es-MX", include_adult: false });
+  const show = pickShow(found && found.results, year, sp.season);
+  if (!show) return {};
+  let eps = await tmdbSeason(show.id, sp.season, "es-MX");
+  const byNum = {};
+  if (!sp.marked && maxNum > eps.length) {
+    // Numeración absoluta (capítulo 50 de una serie con varias temporadas).
+    const detail = await kino.tmdb("/tv/" + show.id, { language: "es-MX" });
+    const seasons = ((detail && detail.seasons) || []).filter((x) => x.season_number > 0).slice(0, 10);
+    let offset = 0;
+    for (const se of seasons) {
+      const list = se.season_number === sp.season ? eps : await tmdbSeason(show.id, se.season_number, "es-MX");
+      for (const e of list) byNum[offset + e.episode_number] = e;
+      offset += list.length;
+    }
+  } else {
+    for (const e of eps) byNum[e.episode_number] = e;
+    const empty = eps.filter((e) => !e.overview).length;
+    if (eps.length && empty > eps.length / 2) {
+      try {
+        const en = await tmdbSeason(show.id, sp.season, "en-US");
+        for (const e of en) if (byNum[e.episode_number] && !byNum[e.episode_number].overview) byNum[e.episode_number].overview = e.overview;
+      } catch (err) {
+        /* sin respaldo en inglés */
+      }
+    }
+  }
+  const out = {};
+  for (const k of Object.keys(byNum)) {
+    const e = byNum[k];
+    out[k] = {
+      name: String(e.name || "").slice(0, 200),
+      overview: String(e.overview || "").slice(0, 2000),
+      still: e.still_path ? TMDB_IMG + e.still_path : "",
+      air: /^\d{4}-\d{2}-\d{2}$/.test(e.air_date || "") ? e.air_date : "",
+      rt: e.runtime > 0 && e.runtime <= 1000 ? e.runtime : 0,
+    };
+  }
+  return out;
+}
+
+async function episodeExtras(slug, title, year, maxNum) {
+  if (typeof kino.tmdb !== "function") return {};
+  const key = "tmdb1:" + slug;
+  try {
+    const hit = kino.storage.get(key);
+    if (hit) return JSON.parse(hit);
+  } catch (e) {
+    /* sin caché */
+  }
+  let extras = {};
+  try {
+    extras = await tmdbEpisodes(title, year, maxNum);
+  } catch (e) {
+    kino.log("tmdb: " + (e && e.message));
+    return {};
+  }
+  try {
+    const raw = JSON.stringify(extras);
+    if (Object.keys(extras).length && raw.length < 60000) kino.storage.set(key, raw, { ttlMs: 6 * 3600000 });
+  } catch (e) {
+    /* no cabe: se pide otra vez */
+  }
+  return extras;
 }
 
 export async function episodes(ref) {
@@ -277,11 +432,10 @@ export async function episodes(ref) {
     let x;
     while ((x = re.exec(html))) nums[parseInt(x[1], 10)] = true;
   }
-  const list = Object.keys(nums)
+  const numbers = Object.keys(nums)
     .map(Number)
     .sort((a, b) => a - b)
-    .slice(0, 2000)
-    .map((n) => ({ season: 1, number: n, ref: "e:" + slug + ":" + n, title: t("episode") + n }));
+    .slice(0, 2000);
 
   // Datos de la serie.
   const info = {};
@@ -302,6 +456,20 @@ export async function episodes(ref) {
     const og = kino.html.select(html, "meta[property=og:image]")[0];
     if (og && og.attrs.content) info.poster = abs(og.attrs.content);
   }
+  const slugTitle = slug.replace(/-/g, " ");
+  const extras = await episodeExtras(slug, info.title || slugTitle, parseInt(info.year, 10) || 0, numbers.length ? numbers[numbers.length - 1] : 0);
+  const list = numbers.map((n) => {
+    const ep = { season: 1, number: n, ref: "e:" + slug + ":" + n, title: t("episode") + n };
+    const x = extras[n];
+    if (x) {
+      if (x.name && !/^(episode|episodio|cap[ií]tulo)\s*\d+$/i.test(x.name)) ep.title = x.name;
+      if (x.overview) ep.overview = x.overview;
+      if (x.still) ep.still = x.still;
+      if (x.air) ep.airDate = x.air;
+      if (x.rt) ep.runtimeMinutes = x.rt;
+    }
+    return ep;
+  });
   return { series: info, episodes: list };
 }
 
