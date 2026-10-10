@@ -545,7 +545,7 @@ export async function episodes(ref) {
   if (em) {
     for (const v of parseList(em[1])) {
       const n = parseInt(v, 10);
-      if (n > 0 && n < 100000) nums[n] = true;
+      if (n >= 0 && n < 99999) nums[n] = true;
     }
   }
   if (!Object.keys(nums).length) {
@@ -579,8 +579,17 @@ export async function episodes(ref) {
   }
   const slugTitle = slug.replace(/-/g, " ");
   const extras = await episodeExtras(slug, info.title || slugTitle, parseInt(info.year, 10) || 0, numbers.length ? numbers[numbers.length - 1] : 0);
+  const shift = numbers.length && numbers[0] === 0 ? 1 : 0;
   const list = numbers.map((n) => {
-    const ep = { season: 1, number: n, ref: "e:" + slug + ":" + n, title: t("episode") + n };
+    // Kino numera desde 1 y no admite el capítulo 0: cuando existe, todos los números se
+    // muestran +1 ("1. Capítulo 0", "2. Capítulo 1"...). El título y el ref llevan el número real
+    // del sitio, y los datos de TMDB se buscan con ese número real.
+    const ep = {
+      season: 1,
+      number: n + shift,
+      ref: "e:" + slug + ":" + n,
+      title: t("episode") + n,
+    };
     const x = extras[n];
     if (x) {
       if (x.name && !/^(episode|episodio|cap[ií]tulo)\s*\d+$/i.test(x.name)) ep.title = x.name;

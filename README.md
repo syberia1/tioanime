@@ -43,8 +43,9 @@ Este README explica qué hace el plugin, cómo está armado, de dónde saca cada
 | **Ver más** | Pagina cada fila por el directorio de TioAnime. |
 | **Ficha** | Muestra título, resumen, géneros, fondo y la lista de capítulos. |
 | **Reproducir** | Abre el capítulo en Voe o YourUpload. El servidor que no elijas queda en el menú **Servidor** del reproductor. |
+| **Descargar** | Kino guarda el capítulo en el dispositivo (capacidad `download`). |
 
-Lo que **no** hace: no descarga, no maneja cuentas de TioAnime, no pasa por Chromecast ni DLNA (no están disponibles para plugins en esta versión de Kino) y no guarda nada en la nube.
+Lo que **no** hace: no maneja cuentas de TioAnime y no guarda nada en la nube. Las descargas las hace Kino con el video que el plugin le entrega (ver [Descargas](#descargas)).
 
 ---
 
@@ -180,6 +181,10 @@ Cuando una persona pulsa reproducir, `resolve()` hace:
 
 Los encabezados `Referer` y `User-Agent` se envían con cada petición del video, porque Voe y YourUpload los exigen.
 
+### Descargas
+
+El manifiesto declara la capacidad `download`, que Kino pide aprobar al instalar. El plugin no descarga nada por su cuenta: Kino toma el video que `resolve()` entrega, con los mismos encabezados (`Referer`, `User-Agent`), y lo guarda en el dispositivo. Si el servidor principal es Voe con HLS, Kino puede elegir la copia MP4 que el plugin deja como alternativa; YourUpload entrega MP4 directo.
+
 ### Caché
 
 El plugin usa `kino.storage` (límite de 256 KB por plugin) con estas claves:
@@ -229,7 +234,8 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 - **En emisión por título.** La carátula de En emisión se busca por título. Dos animes con títulos casi iguales pueden confundirse; el plugin exige coincidencia de slug, así que en ese caso sale sin carátula.
 - **TMDB limitado.** Las consultas a TMDB se reparten entre cargas; el primer inicio puede mostrar algunos títulos sin fondo o resumen.
 - **Películas sin etiqueta.** En la búsqueda, una película que no tenga la etiqueta "Película" en TioAnime sale como serie.
-- **Sin descargas, Chromecast ni DLNA.** Limitación de Kino para plugins en esta versión.
+- **Capítulo 0.** Kino numera los capítulos desde 1, así que cuando una serie tiene capítulo 0 todos los números se muestran +1 ("1. Capítulo 0", "2. Capítulo 1"...). El título y el resumen de TMDB siguen el número real del sitio; lo único que queda corrido son los subtítulos externos que Kino busca por número de episodio, que en esas series llegan con un capítulo de diferencia.
+- **Sin Mega.** Mega cifra cada archivo y la clave va en el enlace; solo su propio reproductor puede descifrarlo, así que un plugin no puede reproducirlo ni descargarlo. Se ignora.
 - **Dependencia de HTML.** El plugin funciona mientras TioAnime conserve su estructura de páginas. Un cambio de diseño puede vaciar filas o capítulos sin dar error visible.
 
 ---
@@ -293,6 +299,7 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.1.0 | "Últimos episodios" pasa a **En emisión**; se quitan las OVAs; las carátulas dejan de venir de las capturas de capítulo; capítulos con imagen y resumen desde TMDB. |
 | 1.2.0 | En emisión toma los animes de los últimos capítulos con su carátula real; las películas se muestran como película (un solo botón para reproducir). |
 | 1.3.0 | Fondo y resumen de TMDB también en En emisión, Animes, búsqueda y fichas de anime. |
+| 1.4.0 | Capacidad de descarga; el capítulo 0 ya aparece (los números se muestran +1 cuando existe). |
 
 ---
 
