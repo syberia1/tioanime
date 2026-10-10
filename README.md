@@ -112,7 +112,7 @@ Una tarjeta del directorio trae el enlace `/anime/<slug>`, el título y la cará
 
 ### Catálogo: inicio, Ver más y búsqueda
 
-- **Inicio** (`home()`) arma tres filas en paralelo. Si una falla, las demás siguen y el error queda en el registro de Kino.
+- **Inicio** (`home()`) arma tres filas en paralelo. Cada fila tiene 12 segundos para llegar; si una falla o tarda más, las demás siguen y el motivo queda en el registro de Kino. Kino corta cualquier llamada a los 20 segundos y deja la lista vacía, así que todo lo que no es esencial (carátulas extra, TMDB) tiene un tope de tiempo más corto.
 - **Ver más** (`browse()`) recibe la referencia de la fila (`dir:all`, `type:1`) y la página siguiente. Se detiene cuando el sitio ya no tiene más páginas.
 - **Búsqueda** (`search()`) usa el directorio con `?q=`. Antes de buscar limpia el texto: quita símbolos que confunden la URL y exige al menos dos caracteres.
 
@@ -122,7 +122,13 @@ Kino recibe como máximo 50 resultados por búsqueda y 40 elementos por fila; el
 
 La fila **En emisión** no usa un filtro del directorio. Toma los últimos capítulos publicados de la página principal (`ul.episodes`) y los reduce a un anime por serie, en el orden en que aparecen. Así la fila muestra animes que tienen capítulos nuevos, como pidió el dueño del proyecto.
 
-Como esos datos vienen de tarjetas de capítulo, la carátula real no está en la tarjeta. Por eso `coverFor()` busca el anime por su título en el directorio y toma la portada de esa tarjeta. El resultado se guarda una semana. Si no hay coincidencia exacta de slug, el anime sale sin carátula en vez de con una imagen equivocada.
+Como esos datos vienen de tarjetas de capítulo, la carátula real no está en la tarjeta. Se obtiene en este orden:
+
+1. de la caché (`cov1:<slug>`, una semana);
+2. de la primera página del directorio, que el inicio ya leyó para la fila Animes (se aprovecha sin una lectura extra);
+3. de una búsqueda en el directorio por título, solo para los que sigan sin carátula: como mucho 6 por carga y con 6 segundos de límite. Si no hay coincidencia exacta de slug, se recuerda 6 horas y el anime sale sin carátula en vez de con una equivocada.
+
+Con esto, la fila completa sus carátulas en una o dos cargas del inicio.
 
 ### Carátulas
 
@@ -149,7 +155,11 @@ TioAnime ofrece carátula, pero no fondo horizontal ni resumen completo en todas
 - **Series** (`seriesInfo`): busca en `/search/tv` con el título sin "Season N", "2nd Season" o "II". Solo acepta coincidencias de animación y de año cercano cuando hay año.
 - **Fichas**: el fondo de TMDB reemplaza el de TioAnime; el resumen de TMDB se usa solo si el de TioAnime es corto (menos de 80 caracteres).
 
-Las consultas se limitan a 8 títulos nuevos por carga de una fila, con 4 en paralelo, porque TMDB restringe cuántas llamadas puede hacer un plugin en pocos segundos. Lo que ya se consultó queda en caché, así que la segunda carga completa lo que faltó.
+Para no pasar el límite de TMDB (pocas consultas por plugin en pocos segundos) ni retrasar el inicio:
+
+- **Series:** las listas no consultan TMDB. Usan solo lo que ya está en la caché, que se llena cuando alguien abre la ficha de una serie. Un título que nunca se abrió sale en la lista solo con su carátula.
+- **Películas:** son las únicas que consultan TMDB desde las listas (hasta 10 nuevas por carga del inicio, 6 en la búsqueda), porque no tienen ficha de capítulos que traiga esos datos.
+- **Tiempo máximo:** la información de TMDB espera como mucho 4 segundos; si no llega, la lista sale igual y se completa en la siguiente carga, desde la caché.
 
 Si TMDB no responde, la función lanza error y **no** se guarda un "sin datos", para que la siguiente carga vuelva a intentarlo. Si TMDB responde pero no encuentra el título, sí se guarda "sin datos" durante un día.
 
@@ -191,9 +201,9 @@ El plugin usa `kino.storage` (límite de 256 KB por plugin) con estas claves:
 
 | Clave | Contenido | Duración |
 | --- | --- | --- |
-| `cov1:<slug>` | Carátula encontrada para un anime de En emisión | 7 días |
+| `cov1:<slug>` | Carátula encontrada para un anime de En emisión (`0` si no hubo coincidencia) | 7 días (6 horas si no hubo) |
 | `mov1:<slug>` | Fondo, resumen y año de una película (TMDB) | 7 días, o 1 día si no hubo datos |
-| `ser1:<slug>` | Fondo y resumen de una serie (TMDB) | 7 días, o 1 día si no hubo datos |
+| `ser1:<slug>` | Fondo y resumen de una serie (TMDB); se guarda al abrir su ficha | 7 días, o 1 día si no hubo datos |
 | `tmdb1:<slug>` | Imagen, título y resumen por capítulo (TMDB) | 6 horas |
 
 Si el almacenamiento está lleno o da error, el plugin sigue funcionando sin caché; solo hace más consultas.
@@ -232,7 +242,7 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 - **Sin temporadas separadas dentro de una ficha.** Cada temporada que TioAnime trata como serie aparte se muestra como otro anime.
 - **Numeración absoluta sin confirmar.** Cuando TioAnime numera de forma absoluta, la conversión a temporadas de TMDB depende del orden de las temporadas. Puede fallar en series con temporadas especiales o con huecos.
 - **En emisión por título.** La carátula de En emisión se busca por título. Dos animes con títulos casi iguales pueden confundirse; el plugin exige coincidencia de slug, así que en ese caso sale sin carátula.
-- **TMDB limitado.** Las consultas a TMDB se reparten entre cargas; el primer inicio puede mostrar algunos títulos sin fondo o resumen.
+- **Series sin fondo en la lista.** El fondo y el resumen de una serie aparecen en la lista solo después de abrir su ficha una vez; la ficha siempre los trae.
 - **Películas sin etiqueta.** En la búsqueda, una película que no tenga la etiqueta "Película" en TioAnime sale como serie.
 - **Capítulo 0.** Kino numera los capítulos desde 1, así que cuando una serie tiene capítulo 0 todos los números se muestran +1 ("1. Capítulo 0", "2. Capítulo 1"...). El título y el resumen de TMDB siguen el número real del sitio; lo único que queda corrido son los subtítulos externos que Kino busca por número de episodio, que en esas series llegan con un capítulo de diferencia.
 - **Sin Mega.** Mega cifra cada archivo y la clave va en el enlace; solo su propio reproductor puede descifrarlo, así que un plugin no puede reproducirlo ni descargarlo. Se ignora.
@@ -246,6 +256,7 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 | --- | --- | --- |
 | Filas vacías en el inicio | TioAnime cambió las tarjetas o los enlaces | `cardsFrom()` (selectores `article`, `li`, `a[href]`, `h3`) |
 | "En emisión" vacía | Cambió el bloque de últimos capítulos de la página principal | `airingItems()` y el selector `ul.episodes` |
+| Inicio vacío o con filas que faltan | Una fila tardó más de 12 s o falló; el registro dice cuál (`home()`, `within()`) |
 | Capítulos no aparecen | Cambió la variable `episodes` o los enlaces `/ver/` | `episodes()` |
 | Capítulos sin imagen ni resumen | TMDB no encontró la serie, o la numeración no coincide | `tmdbEpisodes()`, `splitTitle()`, `pickShow()` |
 | Películas salen como serie | La tarjeta cambió la etiqueta "Película" | `cardsFrom()` (regex de la etiqueta) |
@@ -300,6 +311,7 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.2.0 | En emisión toma los animes de los últimos capítulos con su carátula real; las películas se muestran como película (un solo botón para reproducir). |
 | 1.3.0 | Fondo y resumen de TMDB también en En emisión, Animes, búsqueda y fichas de anime. |
 | 1.4.0 | Capacidad de descarga; el capítulo 0 ya aparece (los números se muestran +1 cuando existe). |
+| 1.4.1 | El inicio ya no se vacía: tiempos límite por fila, TMDB con espera máxima, series sin consultas nuevas desde las listas y carátulas de En emisión tomadas del directorio ya leído. |
 
 ---
 

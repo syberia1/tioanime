@@ -238,19 +238,48 @@ function cacheSet(key, value, ttlMs) {
   }
 }
 
+// Tiempo: Kino corta cualquier llamada a los 20 s y entonces la lista queda vacía. Lo que no es
+// esencial (carátulas extra, TMDB) espera a lo sumo unos segundos y, si no llega, sale en la
+// próxima carga desde la caché.
+const LATE = { late: true };
+
+async function nap(ms) {
+  let left = ms;
+  while (left > 0) {
+    const d = Math.min(left, 5000);
+    await kino.sleep(d);
+    left -= d;
+  }
+}
+
+async function within(promise, ms) {
+  promise.catch(() => {});
+  return Promise.race([promise, nap(ms).then(() => LATE)]);
+}
+
 // Carátula real de un anime que solo conocemos por un capítulo: se busca en el directorio
 // (cuyas tarjetas sí traen la portada) y se recuerda una semana.
 async function coverFor(item) {
   const key = "cov1:" + item.id;
   const hit = cacheGet(key);
-  if (hit) return hit;
+  if (hit) return hit === "0" ? "" : hit;
   const q = cleanQuery(item.title);
   if (q.length < 2) return "";
   const page = await getPage(dirUrl("", 1, q));
   const match = cardsFrom(page.html).filter((c) => c.id === item.id && c.poster)[0];
-  if (!match) return "";
+  if (!match) {
+    cacheSet(key, "0", 6 * 3600000);
+    return "";
+  }
   cacheSet(key, match.poster, 7 * 86400000);
   return match.poster;
+}
+
+// slug -> carátula de las tarjetas de una página del directorio ya leída.
+function coversFrom(html) {
+  const map = {};
+  for (const c of cardsFrom(html)) if (c.poster) map[c.id] = c.poster;
+  return map;
 }
 
 // ---------- 5. Fondo y resumen propios de cada título (TMDB) ----------
@@ -301,19 +330,21 @@ async function infoFor(item) {
   return info;
 }
 
-// Pone resumen y fondo a los títulos de la lista; consulta TMDB como mucho `cap` veces nuevas por llamada.
+// Pone resumen y fondo a los títulos de la lista. Las películas consultan TMDB (como mucho `cap`
+// veces nuevas); las series solo usan lo que ya está en la caché, porque su ficha (episodes) lo
+// consulta y guarda al abrirla. Así el inicio casi no gasta consultas de TMDB.
 async function enrichItems(items, cap) {
   let fresh = 0;
   const todo = [];
   for (const it of items) {
     const hit = cacheGet((it.kind === "movie" ? "mov1:" : "ser1:") + it.id);
     if (hit) applyInfo(it, hit === "0" ? null : JSON.parse(hit));
-    else if (fresh < cap) {
+    else if (it.kind === "movie" && fresh < cap) {
       fresh++;
       todo.push(it);
     }
   }
-  await mapLimit(todo, 4, async (it) => {
+  await mapLimit(todo, 3, async (it) => {
     try {
       applyInfo(it, await infoFor(it));
     } catch (e) {
@@ -336,35 +367,53 @@ export async function search(query) {
   if (q.length < 2) return [];
   const page = await getPage(dirUrl("", 1, q));
   const items = cardsFrom(page.html).slice(0, 50);
-  await enrichItems(items, 8);
+  await within(enrichItems(items, 6), 4000);
   return items;
 }
 
-// "En emisión": los animes de los últimos capítulos publicados, con su carátula real.
-async function airingItems() {
+// "En emisión": los animes de los últimos capítulos publicados, con su carátula real. Las carátulas
+// salen de la caché, del directorio ya leído para la fila Animes y, solo para unas pocas, de una búsqueda.
+async function airingItems(dirPage) {
   const page = await getPage(BASE + "/");
   const ul = kino.html.select(page.html, "ul.episodes")[0];
   const items = cardsFrom(ul ? ul.html : page.html, { onlyEpisodes: true }).slice(0, 24);
-  await mapLimit(items, 5, async (it) => {
-    const cover = await coverFor(it);
-    if (cover) it.poster = cover;
-  });
-  await enrichItems(items, 8);
+  const dir = await dirPage;
+  const seed = dir ? coversFrom(dir.html) : {};
+  const todo = [];
+  for (const it of items) {
+    const hit = cacheGet("cov1:" + it.id);
+    if (hit && hit !== "0") {
+      it.poster = hit;
+    } else if (seed[it.id]) {
+      it.poster = seed[it.id];
+      cacheSet("cov1:" + it.id, seed[it.id], 7 * 86400000);
+    } else if (!hit && todo.length < 6) {
+      todo.push(it);
+    }
+  }
+  await within(
+    mapLimit(todo, 3, async (it) => {
+      const cover = await coverFor(it);
+      if (cover) it.poster = cover;
+    }),
+    6000
+  );
   return items;
 }
 
 export async function home() {
   const en = lang() === "en";
+  // La primera página del directorio sirve a la fila Animes y a las carátulas de En emisión: se lee una sola vez.
+  const dirPage = getPage(dirUrl("dir:all", 1)).catch(() => null);
   const defs = [
-    { id: "en-emision", title: en ? "Airing now" : "En emisión", genre: "anime", load: airingItems },
+    { id: "en-emision", title: en ? "Airing now" : "En emisión", genre: "anime", load: () => airingItems(dirPage) },
     {
       id: "animes",
       title: en ? "Anime" : "Animes",
       ref: "dir:all",
       load: async () => {
-        const items = cardsFrom((await getPage(dirUrl("dir:all", 1))).html).slice(0, 40);
-        await enrichItems(items, 8);
-        return items;
+        const page = (await dirPage) || (await getPage(dirUrl("dir:all", 1)));
+        return cardsFrom(page.html).slice(0, 40);
       },
     },
     {
@@ -372,17 +421,18 @@ export async function home() {
       title: en ? "Movies" : "Películas",
       ref: "type:1",
       genre: "peliculas",
-      load: async () => {
-        const items = cardsFrom((await getPage(dirUrl("type:1", 1))).html, { movies: true }).slice(0, 40);
-        await enrichItems(items, 8);
-        return items;
-      },
+      load: async () => cardsFrom((await getPage(dirUrl("type:1", 1))).html, { movies: true }).slice(0, 40),
     },
   ];
+  // Cada fila tiene 12 s para llegar: una fila lenta no puede dejar vacío todo el inicio.
   const rows = await Promise.all(
     defs.map(async (d) => {
       try {
-        const items = await d.load();
+        const items = await within(d.load(), 12000);
+        if (items === LATE) {
+          kino.log("home: fila " + d.id + " tardó demasiado");
+          return null;
+        }
         if (!items.length) return null;
         const row = { id: d.id, title: d.title, items };
         if (d.ref) row.ref = d.ref;
@@ -394,7 +444,12 @@ export async function home() {
       }
     })
   );
-  return rows.filter(Boolean);
+  const shown = rows.filter(Boolean);
+  // TMDB al final, con tope y tiempo limitado: películas nuevas (hasta 10) y datos ya guardados de las series.
+  const everything = [];
+  for (const row of shown) for (const it of row.items) everything.push(it);
+  await within(enrichItems(everything, 10), 4000);
+  return shown;
 }
 
 export async function browse(ref, cursor) {
@@ -404,7 +459,7 @@ export async function browse(ref, cursor) {
   const pageNo = n > 0 ? n : 1;
   const page = await getPage(dirUrl(kind, pageNo));
   const items = cardsFrom(page.html, { movies: kind === "type:1" });
-  await enrichItems(items, 10);
+  await within(enrichItems(items, 10), 4000);
   const out = { items };
   if (items.length && hasNextPage(page.html, pageNo)) out.next = String(pageNo + 1);
   return out;
