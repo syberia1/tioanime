@@ -125,21 +125,21 @@ function originOf(u) {
 // ---------- 3. HTTP ----------
 
 // Siempre hace el await antes de poder lanzar (regla de la trampa de rechazos).
-async function getPage(url, headers) {
+async function getPage(url, headers, timeoutMs) {
   const opts = {
     headers: Object.assign(
       { "User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9", Accept: "text/html,application/xhtml+xml,*/*" },
       headers || {}
     ),
-    timeoutMs: 9000,
+    timeoutMs: timeoutMs || 12000,
   };
   let r = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       r = await kino.fetch(url, opts);
     } catch (e) {
-      // Falla de red o tiempo agotado: un solo reintento.
-      if (attempt === 1) throw fail("unavailable", "red " + (e && e.message), "siteDown");
+      // Falla de red: un solo reintento. Si el sitio ya agotó el tiempo no se insiste (no alcanzaría el tiempo).
+      if (attempt === 1 || (e && e.code === "timeout")) throw fail("unavailable", (e && e.code === "timeout" ? "tiempo agotado " : "red ") + (e && e.message), "siteDown");
       await kino.sleep(600);
       continue;
     }
@@ -310,7 +310,7 @@ async function movieInfo(title) {
   const tries = plain && plain !== title ? [title, plain] : [title];
   for (const q of tries) {
     const r = await kino.tmdb("/search/movie", { query: q, language: "es-MX", include_adult: false });
-    const list = ((r && r.results) || []).filter((x) => x && x.id && (x.genre_ids || []).indexOf(16) >= 0);
+    const list = ((r && r.results) || []).filter((x) => x && x.id && x.original_language === "ja" && (x.genre_ids || []).indexOf(16) >= 0);
     const hit = list[0];
     if (hit) {
       return {
@@ -323,13 +323,13 @@ async function movieInfo(title) {
   return null;
 }
 
-// Series: se busca por el título sin "Season N"; el año no se toma (sería el de la primera temporada).
-async function seriesInfo(title) {
+// Series: se busca por el título sin "Season N" y se valida con el año del sitio (ver pickShow).
+async function seriesInfo(title, year) {
   if (typeof kino.tmdb !== "function") return null;
   const sp = splitTitle(title);
   if (sp.base.length < 2) return null;
   const r = await kino.tmdb("/search/tv", { query: sp.base, language: "es-MX", include_adult: false });
-  const hit = pickShow((r && r.results) || [], 0, sp.season);
+  const hit = pickShow((r && r.results) || [], year || 0, sp.season, sp.marked);
   if (!hit) return null;
   return {
     overview: String(hit.overview || "").slice(0, 700),
@@ -340,10 +340,10 @@ async function seriesInfo(title) {
 
 // Con caché (una semana si hubo datos, un día si no). Lanza si TMDB falla: así no se guarda un "sin datos" falso.
 async function infoFor(item) {
-  const key = (item.kind === "movie" ? "mov1:" : "ser1:") + item.id;
+  const key = (item.kind === "movie" ? "mov2:" : "ser2:") + item.id;
   const hit = cacheGet(key);
   if (hit) return hit === "0" ? null : JSON.parse(hit);
-  const info = item.kind === "movie" ? await movieInfo(item.title) : await seriesInfo(item.title);
+  const info = item.kind === "movie" ? await movieInfo(item.title) : await seriesInfo(item.title, item.year);
   cacheSet(key, info ? JSON.stringify(info) : "0", info ? 7 * 86400000 : 86400000);
   return info;
 }
@@ -355,7 +355,7 @@ async function enrichItems(items, cap) {
   let fresh = 0;
   const todo = [];
   for (const it of items) {
-    const hit = cacheGet((it.kind === "movie" ? "mov1:" : "ser1:") + it.id);
+    const hit = cacheGet((it.kind === "movie" ? "mov2:" : "ser2:") + it.id);
     if (hit) applyInfo(it, hit === "0" ? null : JSON.parse(hit));
     else if (it.kind === "movie" && fresh < cap) {
       fresh++;
@@ -562,13 +562,20 @@ function splitTitle(title) {
   return { base, season, marked };
 }
 
-function pickShow(results, year, season) {
-  const list = (results || []).filter((r) => r && r.id);
+// Elige la serie de TMDB que corresponde al anime del sitio. Reglas, para no confundir una serie con
+// otra de su misma franquicia (por ejemplo, Steel Ball Run con la primera serie de JoJo):
+//  - solo series japonesas (los animes de TioAnime lo son) y, si hay, de animación;
+//  - temporada 1 sin marcar: su primer estreno debe estar cerca del año del sitio (hasta 4 años antes);
+//  - temporada marcada (2nd Season, "... 3"): el primer estreno solo puede ser anterior o igual al año del sitio.
+// Si nada cumple, no se usa TMDB: es mejor no mostrar datos que mostrar los de otra serie.
+function pickShow(results, year, season, marked) {
+  const list = (results || []).filter((r) => r && r.id && r.original_language === "ja");
   const anim = list.filter((r) => (r.genre_ids || []).indexOf(16) >= 0);
   for (const r of anim.length ? anim : list) {
     const y = parseInt(String(r.first_air_date || "").slice(0, 4), 10);
     if (!year || !y) return r;
-    if (season > 1 ? y <= year : Math.abs(y - year) <= 1) return r;
+    const diff = year - y;
+    if (marked && season > 1 ? diff >= 0 : diff >= -1 && diff <= 4) return r;
   }
   return null;
 }
@@ -583,7 +590,7 @@ async function tmdbEpisodes(title, year, maxNum) {
   const sp = splitTitle(title);
   if (sp.base.length < 2) return {};
   const found = await kino.tmdb("/search/tv", { query: sp.base, language: "es-MX", include_adult: false });
-  const show = pickShow(found && found.results, year, sp.season);
+  const show = pickShow(found && found.results, year, sp.season, sp.marked);
   if (!show) return {};
   let eps = await tmdbSeason(show.id, sp.season, "es-MX");
   const byNum = {};
@@ -625,7 +632,7 @@ async function tmdbEpisodes(title, year, maxNum) {
 
 async function episodeExtras(slug, title, year, maxNum) {
   if (typeof kino.tmdb !== "function") return {};
-  const key = "tmdb1:" + slug;
+  const key = "tmdb2:" + slug;
   try {
     const hit = kino.storage.get(key);
     if (hit) return JSON.parse(hit);
@@ -648,13 +655,8 @@ async function episodeExtras(slug, title, year, maxNum) {
   return extras;
 }
 
-export async function episodes(ref) {
-  const m = /^a:([A-Za-z0-9._~-]+)$/.exec(String(ref));
-  if (!m) throw fail("not_found", "ref " + ref, "badRef");
-  const slug = m[1];
-  const page = await getPage(BASE + "/anime/" + slug);
-  const html = page.html;
-
+// Lee la ficha del sitio: números de capítulo y datos de la serie.
+function parseAnimePage(html, slug) {
   // Números de capítulo: "var episodes = [12,11,...]" y, si no está, los enlaces /ver/slug-N.
   const nums = {};
   const em = /var\s+episodes\s*=\s*\[([^\]]*)\]/.exec(html);
@@ -680,6 +682,12 @@ export async function episodes(ref) {
   if (h1 && h1.text.trim()) info.title = h1.text.replace(/\s+/g, " ").trim().slice(0, 200);
   const sin = kino.html.select(html, "p.sinopsis")[0];
   if (sin && sin.text.trim()) info.overview = sin.text.replace(/\s+/g, " ").trim().slice(0, 2000);
+  if (!info.overview) {
+    // La sinopsis también viene en la descripción de la página (sin el sufijo "- TioAnime ...").
+    const ogd = kino.html.select(html, "meta[property=og:description]")[0];
+    const text = ogd && ogd.attrs.content ? ogd.attrs.content.replace(/\s*-\s*TioAnime[^]*$/i, "").replace(/\s+/g, " ").trim() : "";
+    if (text.length > 30) info.overview = text.slice(0, 2000);
+  }
   const genres = kino.html.select(html, ".genres a").map((g) => g.text.trim()).filter(Boolean);
   if (genres.length) info.genres = genres.slice(0, 5).map((g) => g.slice(0, 30));
   const year = kino.html.select(html, "span.year")[0];
@@ -687,14 +695,62 @@ export async function episodes(ref) {
   const am = /var\s+anime_info\s*=\s*\[([^\]]*)\]/.exec(html);
   if (am) {
     const parts = parseList(am[1]);
-    if (/^\d+$/.test(parts[0] || "")) info.poster = BASE + "/uploads/portadas/" + parts[0] + ".jpg";
+    if (/^\d+$/.test(parts[0] || "")) {
+      info.poster = BASE + "/uploads/portadas/" + parts[0] + ".jpg";
+      info.backdrop = BASE + "/uploads/fondos/" + parts[0] + ".jpg";
+    }
   }
   if (!info.poster) {
     const og = kino.html.select(html, "meta[property=og:image]")[0];
     if (og && og.attrs.content) info.poster = abs(og.attrs.content);
   }
+  return { numbers, info };
+}
+
+function savedGet(key) {
+  const raw = cacheGet(key);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+export async function episodes(ref) {
+  const T = Date.now();
+  const left = () => 18500 - (Date.now() - T);
+  const m = /^a:([A-Za-z0-9._~-]+)$/.exec(String(ref));
+  if (!m) throw fail("not_found", "ref " + ref, "badRef");
+  const slug = m[1];
+
+  // La ficha del sitio se guarda: fresca 10 min (sin pedir nada), y de respaldo 12 h si el sitio tarda o falla.
+  const key = "ep1:" + slug;
+  const saved = savedGet(key);
+  let data = saved && saved.data && Date.now() - saved.t < 10 * 60000 ? saved.data : null;
+  if (!data) {
+    try {
+      const page = await getPage(BASE + "/anime/" + slug, null, 14000);
+      data = parseAnimePage(page.html, slug);
+      if (data.numbers.length) cacheSet(key, JSON.stringify({ t: Date.now(), data }), 12 * 3600000);
+    } catch (e) {
+      if (!saved || !saved.data) throw e;
+      kino.log("episodes: se usa la copia guardada (" + (e && e.message) + ")");
+      data = saved.data;
+    }
+  }
+  const numbers = data.numbers;
+  const info = Object.assign({}, data.info);
   const slugTitle = slug.replace(/-/g, " ");
-  const extras = await episodeExtras(slug, info.title || slugTitle, parseInt(info.year, 10) || 0, numbers.length ? numbers[numbers.length - 1] : 0);
+  // TMDB solo si sobra tiempo (Kino corta la llamada a los 20 s); lo que no llegue sale en la próxima apertura.
+  let extras = {};
+  if (left() > 3000) {
+    const got = await within(
+      episodeExtras(slug, info.title || slugTitle, parseInt(info.year, 10) || 0, numbers.length ? numbers[numbers.length - 1] : 0),
+      Math.min(6000, left() - 1500)
+    );
+    if (got !== LATE) extras = got || {};
+  }
   const shift = numbers.length && numbers[0] === 0 ? 1 : 0;
   const list = numbers.map((n) => {
     // Kino numera desde 1 y no admite el capítulo 0: cuando existe, todos los números se
@@ -717,8 +773,8 @@ export async function episodes(ref) {
     return ep;
   });
   try {
-    const extra = await infoFor({ id: slug, kind: "series", title: info.title || slugTitle });
-    if (extra) {
+    const extra = left() > 2500 ? await within(infoFor({ id: slug, kind: "series", title: info.title || slugTitle, year: parseInt(info.year, 10) || 0 }), Math.min(3000, left() - 1000)) : null;
+    if (extra && extra !== LATE) {
       if (extra.backdrop) info.backdrop = extra.backdrop;
       if (extra.overview && (info.overview || "").length < 80) info.overview = extra.overview;
     }
@@ -733,6 +789,7 @@ export async function episodes(ref) {
 // "var videos = [["Voe","https:\/\/voe.sx\/e\/abc",0,0],["YourUpload","https:\/\/www.yourupload.com\/embed\/xyz",0,0]];"
 function listServers(html) {
   const out = [];
+  out.skipped = [];
   const m = /var\s+videos\s*=\s*(\[[\s\S]*?\])\s*;/.exec(html);
   if (!m) return out;
   let rows = [];
@@ -755,6 +812,7 @@ function listServers(html) {
     if (/voe/i.test(name) || /^https?:\/\/(?:www\.)?voe\./i.test(url)) kind = "voe";
     else if (/yourupload/i.test(name) || /yourupload\.com/i.test(url)) kind = "yourupload";
     if (kind) out.push({ kind, url, name });
+    else out.skipped.push(name);
   }
   return out;
 }
@@ -868,8 +926,34 @@ async function yourUploadStream(embed) {
   return { url: file, headers: { Referer: "https://www.yourupload.com/", "User-Agent": UA }, alts: [] };
 }
 
+// Último recurso: abrir el embed en una página oculta y tomar el video que pide. Sirve cuando el
+// servidor cambió su código y la lectura directa ya no lo entiende (no cuando el archivo fue borrado).
+async function captureStream(embed) {
+  if (!kino.browser || typeof kino.browser.capture !== "function") return null;
+  try {
+    const r = await kino.browser.capture(embed, { headers: { Referer: BASE + "/" }, timeoutMs: 15000 });
+    const media = r && r.media && r.media[0];
+    if (media && media.url) return { url: media.url, headers: media.headers || {}, alts: [] };
+  } catch (e) {
+    kino.log("captura falló: " + (e && e.message));
+  }
+  return null;
+}
+
 async function streamFor(s) {
-  return s.kind === "voe" ? voeStream(s.url) : yourUploadStream(s.url);
+  let err = null;
+  try {
+    return s.kind === "voe" ? await voeStream(s.url) : await yourUploadStream(s.url);
+  } catch (e) {
+    err = e;
+    kino.log("resolve: " + s.kind + " lectura directa falló: " + (e && e.message));
+  }
+  const cap = await captureStream(s.url);
+  if (cap) {
+    kino.log("resolve: " + s.kind + " abierto por captura");
+    return cap;
+  }
+  throw err;
 }
 
 // ---------- 8. resolve ----------
@@ -889,7 +973,11 @@ export async function resolve(ref) {
 
   const page = await getPage(BASE + "/ver/" + p.slug + "-" + p.n);
   const all = listServers(page.html);
-  if (!all.length) throw fail("not_found", "sin Voe ni YourUpload", "noServers");
+  kino.log(
+    "resolve: " + p.slug + "-" + p.n + " servidores compatibles: " + (all.map((s) => s.name).join(", ") || "ninguno") +
+      " | otros: " + ((all.skipped || []).join(", ") || "ninguno")
+  );
+  if (!all.length) throw fail("not_found", "sin Voe ni YourUpload (otros: " + (all.skipped || []).join(", ") + ")", "noServers");
 
   let order;
   if (p.idx >= 0) {
@@ -902,6 +990,7 @@ export async function resolve(ref) {
   let main = null;
   let used = null;
   const rest = [];
+  const failures = [];
   for (const s of order) {
     if (main) {
       rest.push(s);
@@ -912,9 +1001,10 @@ export async function resolve(ref) {
       used = s;
     } catch (e) {
       kino.log("resolve: " + s.kind + " falló: " + (e && e.message));
+      failures.push(s.kind + ": " + (e && e.message));
     }
   }
-  if (!main) throw fail("unavailable", "ningún servidor abrió", "serverFailed");
+  if (!main) throw fail("unavailable", "ningún servidor abrió (" + failures.join(" | ") + ")", "serverFailed");
 
   const stream = {
     url: main.url,
