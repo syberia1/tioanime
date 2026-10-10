@@ -36,6 +36,7 @@ node sdk/run.mjs . resolve e:one-piece-tv:1
 ## Si algo falla
 
 - **En emisión sin carátula:** la carátula se busca en el directorio por título; si no hay coincidencia exacta, el anime sale sin imagen.
+- **Fondo y resumen de series:** vienen de TMDB y se guardan una semana. La primera vez, cada fila consulta pocos títulos a la vez (el límite de TMDB es bajo), así que algunos se completan en la segunda o tercera carga del inicio.
 - **Películas:** se muestran como película (un solo botón de reproducir, capítulo 1 del sitio). Fondo, resumen y año vienen de TMDB; si no la encuentra, quedan solo la carátula y el título.
 - **Un capítulo sin imagen o resumen:** TMDB no encontró la serie (o la numeración no coincide). Sale como "Capítulo N" sin foto.
 - **No salen resultados o capítulos:** TioAnime cambió su HTML. Los selectores están en `cardsFrom()` y `episodes()`.

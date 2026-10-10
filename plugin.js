@@ -253,7 +253,9 @@ async function coverFor(item) {
   return match.poster;
 }
 
-// ---------- 5. Películas: imagen de fondo y resumen propios (TMDB) ----------
+// ---------- 5. Fondo y resumen propios de cada título (TMDB) ----------
+
+const TMDB_BACK = "https://image.tmdb.org/t/p/w780";
 
 async function movieInfo(title) {
   if (typeof kino.tmdb !== "function") return null;
@@ -266,7 +268,7 @@ async function movieInfo(title) {
     if (hit) {
       return {
         overview: String(hit.overview || "").slice(0, 700),
-        backdrop: hit.backdrop_path ? "https://image.tmdb.org/t/p/w780" + hit.backdrop_path : "",
+        backdrop: hit.backdrop_path ? TMDB_BACK + hit.backdrop_path : "",
         year: String(hit.release_date || "").slice(0, 4),
       };
     }
@@ -274,34 +276,53 @@ async function movieInfo(title) {
   return null;
 }
 
-// Pone resumen, fondo y año a las películas de la lista (máximo `cap` consultas nuevas por llamada).
-async function enrichMovies(items, cap) {
-  const movies = items.filter((i) => i.kind === "movie");
+// Series: se busca por el título sin "Season N"; el año no se toma (sería el de la primera temporada).
+async function seriesInfo(title) {
+  if (typeof kino.tmdb !== "function") return null;
+  const sp = splitTitle(title);
+  if (sp.base.length < 2) return null;
+  const r = await kino.tmdb("/search/tv", { query: sp.base, language: "es-MX", include_adult: false });
+  const hit = pickShow((r && r.results) || [], 0, sp.season);
+  if (!hit) return null;
+  return {
+    overview: String(hit.overview || "").slice(0, 700),
+    backdrop: hit.backdrop_path ? TMDB_BACK + hit.backdrop_path : "",
+    year: "",
+  };
+}
+
+// Con caché (una semana si hubo datos, un día si no). Lanza si TMDB falla: así no se guarda un "sin datos" falso.
+async function infoFor(item) {
+  const key = (item.kind === "movie" ? "mov1:" : "ser1:") + item.id;
+  const hit = cacheGet(key);
+  if (hit) return hit === "0" ? null : JSON.parse(hit);
+  const info = item.kind === "movie" ? await movieInfo(item.title) : await seriesInfo(item.title);
+  cacheSet(key, info ? JSON.stringify(info) : "0", info ? 7 * 86400000 : 86400000);
+  return info;
+}
+
+// Pone resumen y fondo a los títulos de la lista; consulta TMDB como mucho `cap` veces nuevas por llamada.
+async function enrichItems(items, cap) {
   let fresh = 0;
   const todo = [];
-  for (const it of movies) {
-    const hit = cacheGet("mov1:" + it.id);
-    if (hit) {
-      applyMovie(it, hit === "0" ? null : JSON.parse(hit));
-    } else if (fresh < cap) {
+  for (const it of items) {
+    const hit = cacheGet((it.kind === "movie" ? "mov1:" : "ser1:") + it.id);
+    if (hit) applyInfo(it, hit === "0" ? null : JSON.parse(hit));
+    else if (fresh < cap) {
       fresh++;
       todo.push(it);
     }
   }
   await mapLimit(todo, 4, async (it) => {
-    let info = null;
     try {
-      info = await movieInfo(it.title);
+      applyInfo(it, await infoFor(it));
     } catch (e) {
-      kino.log("película sin datos: " + (e && e.message));
-      return;
+      kino.log("sin datos de TMDB: " + (e && e.message));
     }
-    cacheSet("mov1:" + it.id, info ? JSON.stringify(info) : "0", info ? 7 * 86400000 : 86400000);
-    applyMovie(it, info);
   });
 }
 
-function applyMovie(item, info) {
+function applyInfo(item, info) {
   if (!info) return;
   if (info.overview) item.overview = info.overview;
   if (info.backdrop) item.backdrop = info.backdrop;
@@ -315,7 +336,7 @@ export async function search(query) {
   if (q.length < 2) return [];
   const page = await getPage(dirUrl("", 1, q));
   const items = cardsFrom(page.html).slice(0, 50);
-  await enrichMovies(items, 8);
+  await enrichItems(items, 8);
   return items;
 }
 
@@ -328,6 +349,7 @@ async function airingItems() {
     const cover = await coverFor(it);
     if (cover) it.poster = cover;
   });
+  await enrichItems(items, 8);
   return items;
 }
 
@@ -339,7 +361,11 @@ export async function home() {
       id: "animes",
       title: en ? "Anime" : "Animes",
       ref: "dir:all",
-      load: async () => cardsFrom((await getPage(dirUrl("dir:all", 1))).html).slice(0, 40),
+      load: async () => {
+        const items = cardsFrom((await getPage(dirUrl("dir:all", 1))).html).slice(0, 40);
+        await enrichItems(items, 8);
+        return items;
+      },
     },
     {
       id: "peliculas",
@@ -348,7 +374,7 @@ export async function home() {
       genre: "peliculas",
       load: async () => {
         const items = cardsFrom((await getPage(dirUrl("type:1", 1))).html, { movies: true }).slice(0, 40);
-        await enrichMovies(items, 12);
+        await enrichItems(items, 8);
         return items;
       },
     },
@@ -378,7 +404,7 @@ export async function browse(ref, cursor) {
   const pageNo = n > 0 ? n : 1;
   const page = await getPage(dirUrl(kind, pageNo));
   const items = cardsFrom(page.html, { movies: kind === "type:1" });
-  if (kind === "type:1") await enrichMovies(items, 12);
+  await enrichItems(items, 10);
   const out = { items };
   if (items.length && hasNextPage(page.html, pageNo)) out.next = String(pageNo + 1);
   return out;
@@ -565,6 +591,15 @@ export async function episodes(ref) {
     }
     return ep;
   });
+  try {
+    const extra = await infoFor({ id: slug, kind: "series", title: info.title || slugTitle });
+    if (extra) {
+      if (extra.backdrop) info.backdrop = extra.backdrop;
+      if (extra.overview && (info.overview || "").length < 80) info.overview = extra.overview;
+    }
+  } catch (e) {
+    kino.log("ficha sin TMDB: " + (e && e.message));
+  }
   return { series: info, episodes: list };
 }
 
