@@ -112,7 +112,7 @@ Una tarjeta del directorio trae el enlace `/anime/<slug>`, el título y la cará
 
 ### Catálogo: inicio, Ver más y búsqueda
 
-- **Inicio** (`home()`) arma tres filas en paralelo. Cada fila tiene 12 segundos para llegar; si una falla o tarda más, las demás siguen y el motivo queda en el registro de Kino. Kino corta cualquier llamada a los 20 segundos y deja la lista vacía, así que todo lo que no es esencial (carátulas extra, TMDB) tiene un tope de tiempo más corto.
+- **Inicio** (`home()`) arma tres filas en paralelo. El inicio trabaja con un presupuesto de 17 segundos (Kino corta cualquier llamada a los 20 y deja la lista vacía). Cada fila se guarda al llegar: si la copia tiene menos de 10 minutos se usa sin pedir nada al sitio, y si el sitio falla o tarda, se muestra la última copia buena (hasta 12 horas) en vez de perder la fila. Las lecturas del sitio reintentan una vez ante un error de red, un 429 o un 5xx. Lo que no es esencial (carátulas extra, TMDB) solo se hace si sobra tiempo.
 - **Ver más** (`browse()`) recibe la referencia de la fila (`dir:all`, `type:1`) y la página siguiente. Se detiene cuando el sitio ya no tiene más páginas.
 - **Búsqueda** (`search()`) usa el directorio con `?q=`. Antes de buscar limpia el texto: quita símbolos que confunden la URL y exige al menos dos caracteres.
 
@@ -201,6 +201,7 @@ El plugin usa `kino.storage` (límite de 256 KB por plugin) con estas claves:
 
 | Clave | Contenido | Duración |
 | --- | --- | --- |
+| `row1:<fila>` | Última copia buena de cada fila del inicio (con su hora) | 12 horas |
 | `cov1:<slug>` | Carátula encontrada para un anime de En emisión (`0` si no hubo coincidencia) | 7 días (6 horas si no hubo) |
 | `mov1:<slug>` | Fondo, resumen y año de una película (TMDB) | 7 días, o 1 día si no hubo datos |
 | `ser1:<slug>` | Fondo y resumen de una serie (TMDB); se guarda al abrir su ficha | 7 días, o 1 día si no hubo datos |
@@ -256,7 +257,7 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 | --- | --- | --- |
 | Filas vacías en el inicio | TioAnime cambió las tarjetas o los enlaces | `cardsFrom()` (selectores `article`, `li`, `a[href]`, `h3`) |
 | "En emisión" vacía | Cambió el bloque de últimos capítulos de la página principal | `airingItems()` y el selector `ul.episodes` |
-| Inicio vacío o con filas que faltan | Una fila tardó más de 12 s o falló; el registro dice cuál (`home()`, `within()`) |
+| Inicio vacío o con filas que faltan | El sitio tardó o falló y no había copia guardada; el registro dice qué fila (`home()`, `getPage()`) |
 | Capítulos no aparecen | Cambió la variable `episodes` o los enlaces `/ver/` | `episodes()` |
 | Capítulos sin imagen ni resumen | TMDB no encontró la serie, o la numeración no coincide | `tmdbEpisodes()`, `splitTitle()`, `pickShow()` |
 | Películas salen como serie | La tarjeta cambió la etiqueta "Película" | `cardsFrom()` (regex de la etiqueta) |
@@ -312,6 +313,7 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.3.0 | Fondo y resumen de TMDB también en En emisión, Animes, búsqueda y fichas de anime. |
 | 1.4.0 | Capacidad de descarga; el capítulo 0 ya aparece (los números se muestran +1 cuando existe). |
 | 1.4.1 | El inicio ya no se vacía: tiempos límite por fila, TMDB con espera máxima, series sin consultas nuevas desde las listas y carátulas de En emisión tomadas del directorio ya leído. |
+| 1.4.2 | Copias de cada fila del inicio (frescas 10 min, de respaldo 12 h), presupuesto de 17 s, reintento ante 429 y 5xx, y límites de tiempo de lectura de 9 s. |
 
 ---
 

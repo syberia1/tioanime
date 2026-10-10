@@ -126,12 +126,30 @@ function originOf(u) {
 
 // Siempre hace el await antes de poder lanzar (regla de la trampa de rechazos).
 async function getPage(url, headers) {
-  const r = await kino.fetch(url, {
+  const opts = {
     headers: Object.assign(
       { "User-Agent": UA, "Accept-Language": "es-ES,es;q=0.9", Accept: "text/html,application/xhtml+xml,*/*" },
       headers || {}
     ),
-  });
+    timeoutMs: 9000,
+  };
+  let r = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      r = await kino.fetch(url, opts);
+    } catch (e) {
+      // Falla de red o tiempo agotado: un solo reintento.
+      if (attempt === 1) throw fail("unavailable", "red " + (e && e.message), "siteDown");
+      await kino.sleep(600);
+      continue;
+    }
+    // El sitio a veces responde 429 o 5xx a ráfagas de peticiones: se espera un poco y se reintenta una vez.
+    if ((r.status === 429 || r.status >= 500) && attempt === 0) {
+      await kino.sleep(900);
+      continue;
+    }
+    break;
+  }
   if (r.status === 404) throw fail("not_found", "HTTP 404 " + url, "notFound");
   if (!r.ok) throw fail("unavailable", "HTTP " + r.status + " " + url, "siteDown");
   return { html: r.text(), url: r.url || url };
@@ -387,23 +405,57 @@ async function airingItems(dirPage) {
     } else if (seed[it.id]) {
       it.poster = seed[it.id];
       cacheSet("cov1:" + it.id, seed[it.id], 7 * 86400000);
-    } else if (!hit && todo.length < 6) {
+    } else if (!hit && todo.length < 4) {
       todo.push(it);
     }
   }
-  await within(
-    mapLimit(todo, 3, async (it) => {
-      const cover = await coverFor(it);
-      if (cover) it.poster = cover;
-    }),
-    6000
-  );
+  // Solo si queda tiempo en el inicio; lo que falte se completa en la próxima carga.
+  if (todo.length && timeLeft() > 5000) {
+    await within(
+      mapLimit(todo, 3, async (it) => {
+        const cover = await coverFor(it);
+        if (cover) it.poster = cover;
+      }),
+      Math.min(5000, timeLeft() - 3000)
+    );
+  }
   return items;
 }
 
+// Presupuesto del inicio: Kino corta la llamada a los 20 s y entonces no se ve nada. Todo lo opcional
+// se mide contra este reloj.
+const HOME_BUDGET_MS = 17000;
+let T0 = 0;
+function timeLeft() {
+  return HOME_BUDGET_MS - (Date.now() - T0);
+}
+
+// Cada fila se guarda al llegar. Si está fresca (menos de 10 min) se usa sin pedir nada al sitio; si el
+// sitio tarda o falla, se muestra la última copia (hasta 12 h) en vez de perder la fila.
+const ROW_FRESH_MS = 10 * 60000;
+
+function savedRow(id) {
+  const raw = cacheGet("row1:" + id);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveRow(row) {
+  try {
+    const raw = JSON.stringify({ t: Date.now(), row });
+    if (raw.length < 40000) cacheSet("row1:" + row.id, raw, 12 * 3600000);
+  } catch (e) {
+    /* sin copia */
+  }
+}
+
 export async function home() {
+  T0 = Date.now();
   const en = lang() === "en";
-  // La primera página del directorio sirve a la fila Animes y a las carátulas de En emisión: se lee una sola vez.
   const dirPage = getPage(dirUrl("dir:all", 1)).catch(() => null);
   const defs = [
     { id: "en-emision", title: en ? "Airing now" : "En emisión", genre: "anime", load: () => airingItems(dirPage) },
@@ -424,31 +476,40 @@ export async function home() {
       load: async () => cardsFrom((await getPage(dirUrl("type:1", 1))).html, { movies: true }).slice(0, 40),
     },
   ];
-  // Cada fila tiene 12 s para llegar: una fila lenta no puede dejar vacío todo el inicio.
+  const loaded = {};
   const rows = await Promise.all(
     defs.map(async (d) => {
-      try {
-        const items = await within(d.load(), 12000);
-        if (items === LATE) {
-          kino.log("home: fila " + d.id + " tardó demasiado");
-          return null;
-        }
-        if (!items.length) return null;
+      const mk = (items) => {
         const row = { id: d.id, title: d.title, items };
         if (d.ref) row.ref = d.ref;
         if (d.genre) row.genre = d.genre;
         return row;
+      };
+      const old = savedRow(d.id);
+      // Copia fresca: no se vuelve a pedir nada (la fila de En emisión no gasta tiempo ni búsquedas).
+      if (old && old.row && old.row.items && old.row.items.length && Date.now() - old.t < ROW_FRESH_MS) {
+        return mk(old.row.items);
+      }
+      try {
+        const items = await within(d.load(), Math.max(4000, timeLeft() - 2500));
+        if (items === LATE) throw new Error("tardó demasiado");
+        if (!items.length) throw new Error("sin elementos");
+        loaded[d.id] = true;
+        return mk(items);
       } catch (e) {
         kino.log("home: fila " + d.id + " falló: " + (e && e.message));
-        return null;
+        // Última copia buena, aunque esté vieja.
+        return old && old.row && old.row.items && old.row.items.length ? mk(old.row.items) : null;
       }
     })
   );
   const shown = rows.filter(Boolean);
-  // TMDB al final, con tope y tiempo limitado: películas nuevas (hasta 10) y datos ya guardados de las series.
+  // TMDB al final y solo si sobra tiempo: películas nuevas (hasta 10) y datos ya guardados de las series.
   const everything = [];
-  for (const row of shown) for (const it of row.items) everything.push(it);
-  await within(enrichItems(everything, 10), 4000);
+  for (const row of shown) if (loaded[row.id]) for (const it of row.items) everything.push(it);
+  if (everything.length && timeLeft() > 3000) await within(enrichItems(everything, 10), Math.min(4000, timeLeft() - 1500));
+  // Se guarda cada fila ya completa (con carátulas y datos de TMDB) para las próximas cargas.
+  for (const row of shown) if (loaded[row.id]) saveRow(row);
   return shown;
 }
 
