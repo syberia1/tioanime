@@ -1,0 +1,21 @@
+{
+  "id": "tioanime",
+  "name": "TioAnime",
+  "version": "0.1.0",
+  "apiVersion": 6,
+  "entry": "plugin.js",
+  "description": "Catálogo de anime subtitulado y en español latino de TioAnime. Extrae el video directamente de sus servidores.",
+  "hosts": [
+    "tioanime.com",
+    "*.tioanime.com"
+  ],
+  "streamHosts": "any",
+  "browser": true,
+  "categories": ["anime"],
+  "capabilities": [
+    "search",
+    "home",
+    "episodes",
+    "resolve"
+  ]
+}
