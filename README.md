@@ -186,7 +186,7 @@ Cuando una persona pulsa reproducir, `resolve()` hace:
 3. Intenta abrir el primero:
    - **Voe**: sigue hasta dos redirecciones, busca el bloque JSON ofuscado (`application/json`) y lo decodifica (ROT13, quitar marcas, base64, restar 3 a cada carácter, invertir, base64, JSON). Si no está, prueba el formato anterior (`'hls'` y `'mp4'` en base64) y, como último recurso, busca cualquier `.m3u8` o `.mp4` en el HTML.
    - **YourUpload**: lee `file:`, luego `og:video`, luego `<source>`.
-4. Si la lectura directa de un servidor falla, abre su embed en una página oculta y toma el video que pide (captura). Si tampoco así, prueba el siguiente servidor.
+4. Si ese servidor falla, prueba el siguiente.
 5. El servidor que sí funcionó es el que Kino reproduce. Los demás quedan como **copias diferidas** en el menú **Servidor** del reproductor: Kino solo los resuelve cuando la persona los elige o cuando el primero falla.
 
 Los encabezados `Referer` y `User-Agent` se envían con cada petición del video, porque Voe y YourUpload los exigen.
@@ -231,7 +231,6 @@ El plugin no pide cuenta ni llave de API. La llave de TMDB la pone Kino, o la pe
 El manifiesto declara:
 
 - `tioanime.com` y `*.tioanime.com`: el sitio de catálogo.
-- `browser: true`: permite abrir una página oculta solo para el último recurso de la reproducción (captura). Kino lo muestra como permiso adicional al instalar.
 - `fetchHosts: "any"` y `streamHosts: "any"`: Voe y YourUpload cambian de dominio y de servidor de video con frecuencia, así que no se pueden listar uno por uno.
 
 Por eso Kino muestra al instalar que el plugin puede conectarse a cualquier host público. Eso es consecuencia directa de cómo funcionan esos servidores, no de algo que el plugin necesite para otra cosa. El plugin no envía datos personales a ningún lado: solo hace peticiones de lectura y pide el video.
@@ -249,7 +248,7 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 - **Películas sin etiqueta.** En la búsqueda, una película que no tenga la etiqueta "Película" en TioAnime sale como serie.
 - **Capítulo 0.** Kino numera los capítulos desde 1, así que cuando una serie tiene capítulo 0 todos los números se muestran +1 ("1. Capítulo 0", "2. Capítulo 1"...). El título y el resumen de TMDB siguen el número real del sitio; lo único que queda corrido son los subtítulos externos que Kino busca por número de episodio, que en esas series llegan con un capítulo de diferencia.
 - **Sin Mega.** Mega cifra cada archivo y la clave va en el enlace; solo su propio reproductor puede descifrarlo, así que un plugin no puede reproducirlo ni descargarlo. Se ignora.
-- **Archivos borrados.** Si un servidor ya no tiene el video (por ejemplo, retirado por derechos de autor), ningún método lo recupera: la captura solo ayuda cuando el servidor cambió su código. En ese caso el registro muestra qué servidores tenía el capítulo y por qué falló cada uno.
+- **Capítulos sin Voe ni YourUpload, o con el video borrado.** El plugin solo usa esos dos servidores. Si un capítulo ofrece únicamente otros (por ejemplo Mega u Okru), o el video fue retirado, la reproducción falla y el mensaje en pantalla dice qué servidores tiene el capítulo o el motivo de cada fallo ("Voe: video borrado. YourUpload: HTTP 403. En el sitio solo hay: Mega, Netu.").
 - **Sitio lento.** Si TioAnime tarda más de 14 segundos en responder (por ejemplo, con una VPN), la ficha y las filas del inicio salen de la última copia guardada; sin copia previa, la primera vez falla con el aviso de que el sitio no responde.
 - **Dependencia de HTML.** El plugin funciona mientras TioAnime conserve su estructura de páginas. Un cambio de diseño puede vaciar filas o capítulos sin dar error visible.
 
@@ -319,8 +318,10 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.4.1 | El inicio ya no se vacía: tiempos límite por fila, TMDB con espera máxima, series sin consultas nuevas desde las listas y carátulas de En emisión tomadas del directorio ya leído. |
 | 1.4.2 | Copias de cada fila del inicio (frescas 10 min, de respaldo 12 h), presupuesto de 17 s, reintento ante 429 y 5xx, y límites de tiempo de lectura de 9 s. |
 | 1.4.3 | La ficha de un anime se guarda (fresca 10 min, respaldo 12 h) y se usa si el sitio tarda; las lecturas esperan hasta 14 s en vez de 9; TMDB en la ficha solo si sobra tiempo. |
-| 1.5.0 | Reproducción más robusta: si Voe o YourUpload cambian su código, el embed se abre en una página oculta y se toma el video que pide. El registro ahora lista los servidores del capítulo (compatibles y otros) y el motivo de cada fallo. |
+| 1.5.0 | (Retirada en 1.5.2) Captura con página oculta como respaldo de la reproducción. El registro ahora lista los servidores del capítulo (compatibles y otros) y el motivo de cada fallo. |
 | 1.5.1 | TMDB ya no confunde una serie con otra de su franquicia (Steel Ball Run mostraba el fondo y la sinopsis de la primera serie de JoJo): solo se aceptan series japonesas y el año de estreno debe coincidir con el del sitio. La sinopsis y el fondo del sitio se usan cuando TMDB no tiene una coincidencia segura. |
+| 1.5.2 | Se retira la captura con página oculta y el permiso de navegador: la reproducción vuelve a usar solo Voe y YourUpload. Los errores de reproducción muestran el motivo concreto en pantalla. Se deja de usar el fondo del sitio (`/uploads/fondos`), que no existe en series nuevas y dejaba la ficha en negro. |
+| 1.5.3 | Si los embeds de Voe y YourUpload responden 404 (video retirado), el mensaje lo dice y nombra los otros servidores que ofrece el capítulo (por ejemplo Mega o Netu). |
 
 ---
 

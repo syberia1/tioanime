@@ -33,6 +33,23 @@ function fail(code, detail, key) {
   return kino.error(code, detail, { userMessage: t(key) });
 }
 
+// Mensaje con datos concretos (servidores y motivo) para que la persona vea qué pasó sin abrir el registro.
+function failWith(code, detail, text) {
+  const clean = String(text).replace(/[^\p{L}\p{N} .,:;()!?'-]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+  return kino.error(code, detail, { userMessage: clean });
+}
+
+function reasonOf(e) {
+  const m = String((e && e.message) || "");
+  if (/borrad|deleted|not found|removed|HTTP 404/i.test(m)) return lang() === "en" ? "video removed" : "video borrado";
+  const h = /HTTP (\d{3})/.exec(m);
+  if (h) return "HTTP " + h[1];
+  if (/tiempo agotado|timeout|took too long/i.test(m)) return lang() === "en" ? "timed out" : "tardó demasiado";
+  if (/sin video/i.test(m)) return lang() === "en" ? "no video found" : "sin video";
+  if (/red /.test(m)) return lang() === "en" ? "no connection" : "sin conexión";
+  return lang() === "en" ? "failed" : "falló";
+}
+
 // ---------- 2. Utilidades de texto ----------
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -695,10 +712,7 @@ function parseAnimePage(html, slug) {
   const am = /var\s+anime_info\s*=\s*\[([^\]]*)\]/.exec(html);
   if (am) {
     const parts = parseList(am[1]);
-    if (/^\d+$/.test(parts[0] || "")) {
-      info.poster = BASE + "/uploads/portadas/" + parts[0] + ".jpg";
-      info.backdrop = BASE + "/uploads/fondos/" + parts[0] + ".jpg";
-    }
+    if (/^\d+$/.test(parts[0] || "")) info.poster = BASE + "/uploads/portadas/" + parts[0] + ".jpg";
   }
   if (!info.poster) {
     const og = kino.html.select(html, "meta[property=og:image]")[0];
@@ -895,7 +909,10 @@ async function voeStream(embed) {
   }
   const found = voeExtract(html);
   const main = found.hls || found.mp4;
-  if (!main) throw fail("unavailable", "Voe sin video en " + url, "serverFailed");
+  if (!main) {
+    const gone = /not\s*found|has been deleted|was deleted|removed|no longer available|copyright/i.test(html.slice(0, 20000));
+    throw fail("unavailable", (gone ? "Voe video borrado en " : "Voe sin video en ") + url, "serverFailed");
+  }
   const headers = { Referer: originOf(url) + "/", "User-Agent": UA };
   const res = { url: main, headers, alts: [] };
   if (found.hls && found.mp4) res.alts.push({ url: found.mp4, headers, label: "Voe MP4" });
@@ -921,39 +938,16 @@ async function yourUploadStream(embed) {
     if (m) file = m[1];
   }
   file = unslash(file).replace(/&amp;/g, "&");
-  if (!file) throw fail("unavailable", "YourUpload sin video", "serverFailed");
+  if (!file) {
+    const gone = /not\s*found|has been deleted|was deleted|removed|no longer available|copyright/i.test(html.slice(0, 20000));
+    throw fail("unavailable", gone ? "YourUpload video borrado" : "YourUpload sin video", "serverFailed");
+  }
   file = abs(file, page.url).replace(/^http:\/\//i, "https://");
   return { url: file, headers: { Referer: "https://www.yourupload.com/", "User-Agent": UA }, alts: [] };
 }
 
-// Último recurso: abrir el embed en una página oculta y tomar el video que pide. Sirve cuando el
-// servidor cambió su código y la lectura directa ya no lo entiende (no cuando el archivo fue borrado).
-async function captureStream(embed) {
-  if (!kino.browser || typeof kino.browser.capture !== "function") return null;
-  try {
-    const r = await kino.browser.capture(embed, { headers: { Referer: BASE + "/" }, timeoutMs: 15000 });
-    const media = r && r.media && r.media[0];
-    if (media && media.url) return { url: media.url, headers: media.headers || {}, alts: [] };
-  } catch (e) {
-    kino.log("captura falló: " + (e && e.message));
-  }
-  return null;
-}
-
 async function streamFor(s) {
-  let err = null;
-  try {
-    return s.kind === "voe" ? await voeStream(s.url) : await yourUploadStream(s.url);
-  } catch (e) {
-    err = e;
-    kino.log("resolve: " + s.kind + " lectura directa falló: " + (e && e.message));
-  }
-  const cap = await captureStream(s.url);
-  if (cap) {
-    kino.log("resolve: " + s.kind + " abierto por captura");
-    return cap;
-  }
-  throw err;
+  return s.kind === "voe" ? voeStream(s.url) : yourUploadStream(s.url);
 }
 
 // ---------- 8. resolve ----------
@@ -977,7 +971,13 @@ export async function resolve(ref) {
     "resolve: " + p.slug + "-" + p.n + " servidores compatibles: " + (all.map((s) => s.name).join(", ") || "ninguno") +
       " | otros: " + ((all.skipped || []).join(", ") || "ninguno")
   );
-  if (!all.length) throw fail("not_found", "sin Voe ni YourUpload (otros: " + (all.skipped || []).join(", ") + ")", "noServers");
+  if (!all.length) {
+    const others = (all.skipped || []).filter((n, i, a) => n && a.indexOf(n) === i).slice(0, 4);
+    const text =
+      (lang() === "en" ? "This episode has no Voe or YourUpload." : "Este capítulo no tiene Voe ni YourUpload.") +
+      (others.length ? (lang() === "en" ? " Available: " : " Disponibles: ") + others.join(", ") + "." : "");
+    throw failWith("not_found", "sin Voe ni YourUpload (otros: " + others.join(", ") + ")", text);
+  }
 
   let order;
   if (p.idx >= 0) {
@@ -1001,10 +1001,17 @@ export async function resolve(ref) {
       used = s;
     } catch (e) {
       kino.log("resolve: " + s.kind + " falló: " + (e && e.message));
-      failures.push(s.kind + ": " + (e && e.message));
+      failures.push({ label: serverLabel(s, all), reason: reasonOf(e), detail: (e && e.message) || "" });
     }
   }
-  if (!main) throw fail("unavailable", "ningún servidor abrió (" + failures.join(" | ") + ")", "serverFailed");
+  if (!main) {
+    const others = (all.skipped || []).filter((n, i, a) => n && a.indexOf(n) === i).slice(0, 3);
+    const text =
+      (lang() === "en" ? "The video could not be opened. " : "No se pudo abrir el video. ") +
+      failures.map((f) => f.label + ": " + f.reason + ".").join(" ") +
+      (others.length ? (lang() === "en" ? " Only on the site: " : " En el sitio solo hay: ") + others.join(", ") + "." : "");
+    throw failWith("unavailable", "ningún servidor abrió (" + failures.map((f) => f.label + ": " + f.detail).join(" | ") + ")", text);
+  }
 
   const stream = {
     url: main.url,
