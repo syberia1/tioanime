@@ -139,15 +139,23 @@ async function getPage(url, headers) {
 
 // ---------- 4. Lectura de TioAnime ----------
 
-function mkItem(slug, title, poster) {
+function mkItem(slug, title, poster, movie) {
   if (!slug || !ID_OK.test(slug) || !title) return null;
-  const item = { id: slug, ref: "a:" + slug, title: String(title).slice(0, 200), kind: "series" };
+  const item = {
+    id: slug,
+    // Una película se reproduce de una vez: su ref va directo a resolve (capítulo 1 del sitio).
+    ref: movie ? "e:" + slug + ":1" : "a:" + slug,
+    title: String(title).slice(0, 200),
+    kind: movie ? "movie" : "series",
+  };
   if (poster) item.poster = poster;
   return item;
 }
 
 // Tarjetas (<article>) de un listado. Sirven las de anime (/anime/slug) y las de capítulo (/ver/slug-N).
-function cardsFrom(html) {
+// opts.movies: todo lo que salga es película. opts.onlyEpisodes: solo tarjetas de capítulo.
+function cardsFrom(html, opts) {
+  opts = opts || {};
   let boxes = kino.html.select(html, "article").map((a) => a.html);
   if (!boxes.length) boxes = kino.html.select(html, "li").map((a) => a.html);
   const items = [];
@@ -167,6 +175,7 @@ function cardsFrom(html) {
       isEpisode = true;
       slug = m[1].replace(/-\d+$/, "");
     }
+    if (opts.onlyEpisodes && !isEpisode) continue;
     if (seen[slug]) continue;
     const h3 = kino.html.select(box, "h3")[0];
     const img = kino.html.select(box, "img")[0];
@@ -175,7 +184,8 @@ function cardsFrom(html) {
     if (isEpisode) title = title.replace(/\s+\d+$/, "");
     // La imagen de una tarjeta de capítulo es una captura, no la carátula: no se usa.
     const src = img && !isEpisode ? img.attrs.src || img.attrs["data-src"] || "" : "";
-    const item = mkItem(slug, title, src ? abs(src) : "");
+    const movie = !isEpisode && (opts.movies || /anime-type-peli|>\s*Pel[ií]cula\s*</i.test(box));
+    const item = mkItem(slug, title, src ? abs(src) : "", movie);
     if (!item) continue;
     seen[slug] = true;
     items.push(item);
@@ -187,60 +197,115 @@ function hasNextPage(html, page) {
   return new RegExp("[?&;]p=" + (page + 1) + "(?![0-9])").test(html);
 }
 
-function dirUrl(kind, page, query, statusParam) {
+function dirUrl(kind, page, query) {
   const parts = [];
   if (query) parts.push("q=" + encodeURIComponent(query));
   if (kind === "type:1") parts.push("type%5B%5D=1");
-  if (kind === "status:1" && statusParam) parts.push(statusParam);
   if (page > 1) parts.push("p=" + page);
   return BASE + "/directorio" + (parts.length ? "?" + parts.join("&") : "");
 }
 
-function maxPage(html) {
-  let top = 0;
-  const re = /[?&;]p=(\d+)/g;
-  let x;
-  while ((x = re.exec(html))) top = Math.max(top, parseInt(x[1], 10));
-  return top;
+// Corre fn sobre la lista con a lo más `limit` a la vez (Kino permite 6 fetches simultáneos).
+async function mapLimit(list, limit, fn) {
+  const out = new Array(list.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < list.length) {
+      const k = next++;
+      try {
+        out[k] = await fn(list[k], k);
+      } catch (e) {
+        out[k] = undefined;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+  return out;
 }
 
-// El filtro "En emisión" del directorio: se prueban los nombres de parámetro más probables y se
-// guarda el que de verdad cambia el listado (menos páginas que el directorio completo).
-const STATUS_VARIANTS = ["status=1", "status%5B%5D=1", "estado=1", "estado%5B%5D=1"];
-
-async function statusParam() {
-  let saved = null;
+function cacheGet(key) {
   try {
-    saved = kino.storage.get("statusParam");
+    return kino.storage.get(key);
   } catch (e) {
-    saved = null;
+    return null;
   }
-  if (saved) return saved === "none" ? "" : saved;
-  const all = await getPage(dirUrl("dir:all", 1));
-  const allMax = maxPage(all.html);
-  let found = "none";
-  for (const v of STATUS_VARIANTS) {
-    try {
-      const page = await getPage(dirUrl("status:1", 1, "", v));
-      if (cardsFrom(page.html).length && maxPage(page.html) !== allMax) {
-        found = v;
-        break;
-      }
-    } catch (e) {
-      kino.log("estado: " + v + " no sirvió");
-    }
-  }
+}
+function cacheSet(key, value, ttlMs) {
   try {
-    kino.storage.set("statusParam", found, found === "none" ? { ttlMs: 3600000 } : undefined);
+    kino.storage.set(key, value, { ttlMs });
   } catch (e) {
     /* sin caché */
   }
-  return found === "none" ? "" : found;
 }
 
-async function statusPage(pageNo) {
-  const v = await statusParam();
-  return getPage(v ? dirUrl("status:1", pageNo, "", v) : dirUrl("dir:all", pageNo));
+// Carátula real de un anime que solo conocemos por un capítulo: se busca en el directorio
+// (cuyas tarjetas sí traen la portada) y se recuerda una semana.
+async function coverFor(item) {
+  const key = "cov1:" + item.id;
+  const hit = cacheGet(key);
+  if (hit) return hit;
+  const q = cleanQuery(item.title);
+  if (q.length < 2) return "";
+  const page = await getPage(dirUrl("", 1, q));
+  const match = cardsFrom(page.html).filter((c) => c.id === item.id && c.poster)[0];
+  if (!match) return "";
+  cacheSet(key, match.poster, 7 * 86400000);
+  return match.poster;
+}
+
+// ---------- 5. Películas: imagen de fondo y resumen propios (TMDB) ----------
+
+async function movieInfo(title) {
+  if (typeof kino.tmdb !== "function") return null;
+  const plain = title.replace(/\bmovie\s*\d*\s*:?\s*/i, " ").replace(/\s+/g, " ").trim();
+  const tries = plain && plain !== title ? [title, plain] : [title];
+  for (const q of tries) {
+    const r = await kino.tmdb("/search/movie", { query: q, language: "es-MX", include_adult: false });
+    const list = ((r && r.results) || []).filter((x) => x && x.id && (x.genre_ids || []).indexOf(16) >= 0);
+    const hit = list[0];
+    if (hit) {
+      return {
+        overview: String(hit.overview || "").slice(0, 700),
+        backdrop: hit.backdrop_path ? "https://image.tmdb.org/t/p/w780" + hit.backdrop_path : "",
+        year: String(hit.release_date || "").slice(0, 4),
+      };
+    }
+  }
+  return null;
+}
+
+// Pone resumen, fondo y año a las películas de la lista (máximo `cap` consultas nuevas por llamada).
+async function enrichMovies(items, cap) {
+  const movies = items.filter((i) => i.kind === "movie");
+  let fresh = 0;
+  const todo = [];
+  for (const it of movies) {
+    const hit = cacheGet("mov1:" + it.id);
+    if (hit) {
+      applyMovie(it, hit === "0" ? null : JSON.parse(hit));
+    } else if (fresh < cap) {
+      fresh++;
+      todo.push(it);
+    }
+  }
+  await mapLimit(todo, 4, async (it) => {
+    let info = null;
+    try {
+      info = await movieInfo(it.title);
+    } catch (e) {
+      kino.log("película sin datos: " + (e && e.message));
+      return;
+    }
+    cacheSet("mov1:" + it.id, info ? JSON.stringify(info) : "0", info ? 7 * 86400000 : 86400000);
+    applyMovie(it, info);
+  });
+}
+
+function applyMovie(item, info) {
+  if (!info) return;
+  if (info.overview) item.overview = info.overview;
+  if (info.backdrop) item.backdrop = info.backdrop;
+  if (/^\d{4}$/.test(info.year || "")) item.year = info.year;
 }
 
 // ---------- 5. search, home, browse ----------
@@ -249,23 +314,52 @@ export async function search(query) {
   const q = cleanQuery(query && query.q);
   if (q.length < 2) return [];
   const page = await getPage(dirUrl("", 1, q));
-  return cardsFrom(page.html).slice(0, 50);
+  const items = cardsFrom(page.html).slice(0, 50);
+  await enrichMovies(items, 8);
+  return items;
+}
+
+// "En emisión": los animes de los últimos capítulos publicados, con su carátula real.
+async function airingItems() {
+  const page = await getPage(BASE + "/");
+  const ul = kino.html.select(page.html, "ul.episodes")[0];
+  const items = cardsFrom(ul ? ul.html : page.html, { onlyEpisodes: true }).slice(0, 24);
+  await mapLimit(items, 5, async (it) => {
+    const cover = await coverFor(it);
+    if (cover) it.poster = cover;
+  });
+  return items;
 }
 
 export async function home() {
   const en = lang() === "en";
   const defs = [
-    { id: "en-emision", title: en ? "Airing now" : "En emisión", ref: "status:1", genre: "anime", load: () => statusPage(1) },
-    { id: "animes", title: en ? "Anime" : "Animes", ref: "dir:all", load: () => getPage(dirUrl("dir:all", 1)) },
-    { id: "peliculas", title: en ? "Movies" : "Películas", ref: "type:1", genre: "peliculas", load: () => getPage(dirUrl("type:1", 1)) },
+    { id: "en-emision", title: en ? "Airing now" : "En emisión", genre: "anime", load: airingItems },
+    {
+      id: "animes",
+      title: en ? "Anime" : "Animes",
+      ref: "dir:all",
+      load: async () => cardsFrom((await getPage(dirUrl("dir:all", 1))).html).slice(0, 40),
+    },
+    {
+      id: "peliculas",
+      title: en ? "Movies" : "Películas",
+      ref: "type:1",
+      genre: "peliculas",
+      load: async () => {
+        const items = cardsFrom((await getPage(dirUrl("type:1", 1))).html, { movies: true }).slice(0, 40);
+        await enrichMovies(items, 12);
+        return items;
+      },
+    },
   ];
   const rows = await Promise.all(
     defs.map(async (d) => {
       try {
-        const page = await d.load();
-        const items = cardsFrom(page.html).slice(0, 40);
+        const items = await d.load();
         if (!items.length) return null;
-        const row = { id: d.id, title: d.title, items, ref: d.ref };
+        const row = { id: d.id, title: d.title, items };
+        if (d.ref) row.ref = d.ref;
         if (d.genre) row.genre = d.genre;
         return row;
       } catch (e) {
@@ -279,11 +373,12 @@ export async function home() {
 
 export async function browse(ref, cursor) {
   const kind = String(ref);
-  if (!/^(dir:all|type:1|status:1)$/.test(kind)) throw fail("not_found", "browse " + kind, "notFound");
+  if (!/^(dir:all|type:1)$/.test(kind)) throw fail("not_found", "browse " + kind, "notFound");
   const n = parseInt(cursor, 10);
   const pageNo = n > 0 ? n : 1;
-  const page = kind === "status:1" ? await statusPage(pageNo) : await getPage(dirUrl(kind, pageNo));
-  const items = cardsFrom(page.html);
+  const page = await getPage(dirUrl(kind, pageNo));
+  const items = cardsFrom(page.html, { movies: kind === "type:1" });
+  if (kind === "type:1") await enrichMovies(items, 12);
   const out = { items };
   if (items.length && hasNextPage(page.html, pageNo)) out.next = String(pageNo + 1);
   return out;

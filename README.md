@@ -5,7 +5,7 @@ Plugin de Kino (apiVersion 6) para [TioAnime](https://tioanime.com): busca, list
 | Función | Qué hace |
 | --- | --- |
 | `search` | Busca en `/directorio?q=` |
-| `home` | Filas: En emisión, Animes y Películas (con "Ver más"), siempre con la carátula del anime |
+| `home` | Filas: En emisión (los animes de los últimos capítulos publicados), Animes y Películas, siempre con la carátula real |
 | `browse` | "Ver más" paginado de cada fila |
 | `episodes` | Capítulos de `/anime/<slug>`; imagen, título y resumen de cada uno se piden a TMDB con `kino.tmdb` (Kino 0.9.53+) |
 | `resolve` | Lee `var videos` de `/ver/<slug>-<n>`, saca Voe y YourUpload; el servidor preferido suena primero y el otro queda como copia en el menú **Servidor** |
@@ -35,7 +35,8 @@ node sdk/run.mjs . resolve e:one-piece-tv:1
 
 ## Si algo falla
 
-- **"En emisión" muestra todo el directorio:** el plugin prueba `status=1`, `status[]=1`, `estado=1` y recuerda el que cambia el listado; si ninguno sirve, muestra los animes más recientes. Dime el parámetro real (míralo en la URL al filtrar "En emisión" en el sitio) y lo fijo.
+- **En emisión sin carátula:** la carátula se busca en el directorio por título; si no hay coincidencia exacta, el anime sale sin imagen.
+- **Películas:** se muestran como película (un solo botón de reproducir, capítulo 1 del sitio). Fondo, resumen y año vienen de TMDB; si no la encuentra, quedan solo la carátula y el título.
 - **Un capítulo sin imagen o resumen:** TMDB no encontró la serie (o la numeración no coincide). Sale como "Capítulo N" sin foto.
 - **No salen resultados o capítulos:** TioAnime cambió su HTML. Los selectores están en `cardsFrom()` y `episodes()`.
 - **Voe no abre:** Voe cambia su ofuscación. Ajusta `decodeVoe()` / `voeExtract()`.
