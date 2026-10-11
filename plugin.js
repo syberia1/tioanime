@@ -439,10 +439,18 @@ function timeLeft() {
 const ROW_FRESH_MS = 10 * 60000;
 
 function savedRow(id) {
-  const raw = cacheGet("row1:" + id);
+  // "row2": las copias anteriores ("row1") podían traer fondos del sitio (casi negros) que bloqueaban los de TMDB.
+  const raw = cacheGet("row2:" + id);
   if (!raw) return null;
   try {
-    return JSON.parse(raw);
+    const saved = JSON.parse(raw);
+    // Solo se aceptan fondos de TMDB en las copias; cualquier otro se quita para que se vuelva a buscar el de TMDB.
+    if (saved && saved.row && saved.row.items) {
+      for (const it of saved.row.items) {
+        if (it.backdrop && !/^https:\/\/image\.tmdb\.org\//.test(it.backdrop)) delete it.backdrop;
+      }
+    }
+    return saved;
   } catch (e) {
     return null;
   }
@@ -451,7 +459,7 @@ function savedRow(id) {
 function saveRow(row, t) {
   try {
     const raw = JSON.stringify({ t: t || Date.now(), row });
-    if (raw.length < 40000) cacheSet("row1:" + row.id, raw, 12 * 3600000);
+    if (raw.length < 40000) cacheSet("row2:" + row.id, raw, 12 * 3600000);
   } catch (e) {
     /* sin copia */
   }
@@ -550,7 +558,7 @@ async function fillBackdrops(rows, maxNew, budgetMs) {
   }
   if (todo.length && budgetMs > 800) {
     await within(
-      mapLimit(todo, 3, async (it) => {
+      mapLimit(todo, 4, async (it) => {
         try {
           await backdropFor(it);
         } catch (e) {
@@ -691,7 +699,7 @@ export async function home() {
   try {
     const bdRows = shown.filter((r) => r.id === "en-emision" || r.id === "animes");
     if (bdRows.length) {
-      const changed = await fillBackdrops(bdRows, 12, Math.min(3000, timeLeft() - 2500));
+      const changed = await fillBackdrops(bdRows, 18, Math.min(3500, timeLeft() - 2500));
       for (const row of bdRows) {
         if (changed[row.id] && !loaded[row.id] && copyTime[row.id]) saveRow(row, copyTime[row.id]);
       }
