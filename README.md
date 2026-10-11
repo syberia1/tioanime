@@ -39,7 +39,7 @@ Este README explica qué hace el plugin, cómo está armado, de dónde saca cada
 | Función de Kino | Qué hace este plugin |
 | --- | --- |
 | **Buscar** | Busca en el directorio de TioAnime. Devuelve animes y películas. |
-| **Inicio (Home)** | Cinco filas: **En emisión**, **Animes**, **Películas**, **OVAs** y **Especiales**, cada una (salvo En emisión) con "Ver más". |
+| **Inicio (Home)** | Tres filas: **En emisión**, **Animes** y **Películas**, cada una (salvo En emisión) con "Ver más". |
 | **Ver más** | Pagina cada fila por el directorio de TioAnime. |
 | **Ficha** | Muestra título, resumen, géneros, fondo y la lista de capítulos. |
 | **Reproducir** | Abre el capítulo en Voe o YourUpload. El servidor que no elijas queda en el menú **Servidor** del reproductor. |
@@ -112,7 +112,17 @@ Una tarjeta del directorio trae el enlace `/anime/<slug>`, el título y la cará
 
 ### Catálogo: inicio, Ver más y búsqueda
 
-- **Inicio** (`home()`) arma cinco filas en paralelo. El inicio trabaja con un presupuesto de 17 segundos (Kino corta cualquier llamada a los 20 y deja la lista vacía). Cada fila se guarda al llegar: si la copia tiene menos de 10 minutos se usa sin pedir nada al sitio, y si el sitio falla o tarda, se muestra la última copia buena (hasta 12 horas) en vez de perder la fila. Las lecturas del sitio reintentan una vez ante un error de red, un 429 o un 5xx. Lo que no es esencial (carátulas extra, TMDB) solo se hace si sobra tiempo.
+- **Inicio** (`home()`) arma tres filas en paralelo. El inicio responde primero con lo guardado y solo espera al sitio una ventana corta (Kino corta cualquier llamada a los 20 segundos y deja la lista vacía). Cada fila se guarda al llegar, y al abrir el inicio:
+
+| Copia guardada | Qué hace |
+| --- | --- |
+| Menos de 10 minutos | La usa tal cual, sin pedir nada al sitio (instantáneo) |
+| Hasta 1 hora | Intenta refrescar 2,5 segundos; si el sitio no alcanza, muestra la copia |
+| Hasta 6 horas | Intenta refrescar 6 segundos |
+| Más vieja (hasta 12 horas) | Intenta refrescar 12 segundos |
+| Ninguna (primera vez) | Espera al sitio, dentro de un presupuesto de 17 segundos |
+
+Los datos de TMDB ya guardados se aplican siempre (instantáneo); las consultas nuevas a TMDB y las búsquedas de carátulas extra solo se hacen cuando no hay copia que mostrar. Las lecturas del sitio reintentan una vez ante un 429 o un 5xx.
 - **Ver más** (`browse()`) recibe la referencia de la fila (`dir:all`, `type:1`) y la página siguiente. Se detiene cuando el sitio ya no tiene más páginas.
 - **Búsqueda** (`search()`) usa el directorio con `?q=`. Antes de buscar limpia el texto: quita símbolos que confunden la URL y exige al menos dos caracteres.
 
@@ -142,7 +152,7 @@ Regla general: **la carátula siempre es la de TioAnime**, nunca una imagen de c
 
 Una película se detecta de dos formas:
 
-- en el **inicio** y en **Ver más** de la fila Películas, todo lo que sale es película (`type[]=1` del directorio; OVAs y Especiales usan `type[]=2` y `type[]=3`);
+- en el **inicio** y en **Ver más** de la fila Películas, todo lo que sale es película (`type[]=1` del directorio);
 - en la **búsqueda** y en las otras filas, cuando la tarjeta muestra la etiqueta "Película".
 
 Una película se entrega a Kino con `kind: "movie"` y su `ref` apunta directo al capítulo 1 del sitio (`e:<slug>:1`). Así Kino muestra un solo botón "Reproducir" y no una lista de capítulos.
@@ -159,7 +169,6 @@ Para no pasar el límite de TMDB (pocas consultas por plugin en pocos segundos) 
 
 - **Series:** las listas no consultan TMDB. Usan solo lo que ya está en la caché, que se llena cuando alguien abre la ficha de una serie. Un título que nunca se abrió sale en la lista solo con su carátula.
 - **Películas:** son las únicas que consultan TMDB desde las listas (hasta 10 nuevas por carga del inicio, 6 en la búsqueda), porque no tienen ficha de capítulos que traiga esos datos.
-- **OVAs y Especiales:** también consultan TMDB desde sus filas (hasta 10 nuevas por carga), con una búsqueda más tolerante: se quita "OVA", "Special" o "Especial" del título, se busca en series y en películas, y solo se acepta un resultado japonés de animación cuyo nombre comparta al menos el 60 % de las palabras del título (las tarjetas no traen año, así que no se puede validar por año). El resumen y el fondo suelen ser los de la serie principal. La ficha de un OVA o especial usa lo mismo, y sus capítulos no se buscan en TMDB porque su numeración no coincide con la del sitio.
 - **Tiempo máximo:** la información de TMDB espera como mucho 4 segundos; si no llega, la lista sale igual y se completa en la siguiente carga, desde la caché.
 
 Si TMDB no responde, la función lanza error y **no** se guarda un "sin datos", para que la siguiente carga vuelva a intentarlo. Si TMDB responde pero no encuentra el título, sí se guarda "sin datos" durante un día.
@@ -206,7 +215,6 @@ El plugin usa `kino.storage` (límite de 256 KB por plugin) con estas claves:
 | `row1:<fila>` | Última copia buena de cada fila del inicio (con su hora) | 12 horas |
 | `cov1:<slug>` | Carátula encontrada para un anime de En emisión (`0` si no hubo coincidencia) | 7 días (6 horas si no hubo) |
 | `mov2:<slug>` | Fondo, resumen y año de una película (TMDB) | 7 días, o 1 día si no hubo datos |
-| `sub1:<slug>` | Fondo y resumen de un OVA o especial (TMDB) | 7 días, o 1 día si no hubo datos |
 | `ser2:<slug>` | Fondo y resumen de una serie (TMDB); se guarda al abrir su ficha | 7 días, o 1 día si no hubo datos |
 | `tmdb2:<slug>` | Imagen, título y resumen por capítulo (TMDB) | 6 horas |
 
@@ -326,6 +334,8 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.5.3 | Si los embeds de Voe y YourUpload responden 404 (video retirado), el mensaje lo dice y nombra los otros servidores que ofrece el capítulo (por ejemplo Mega o Netu). |
 | 1.6.0 | Nuevas filas **OVAs** y **Especiales** en el inicio, con su "Ver más". |
 | 1.6.1 | TMDB también en las filas OVAs y Especiales (búsqueda tolerante sin las palabras OVA/Special, en series y películas); en la ficha de un OVA o especial no se buscan capítulos en TMDB. |
+| 1.6.2 | Se retiran las filas OVAs y Especiales del inicio (y su búsqueda en TMDB). |
+| 1.7.0 | Inicio más rápido: se muestra primero lo guardado y solo se espera al sitio una ventana corta (2,5 s si la copia tiene menos de 1 h); las consultas nuevas a TMDB y las búsquedas de carátulas solo se hacen la primera vez. |
 
 ---
 
