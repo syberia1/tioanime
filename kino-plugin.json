@@ -1,7 +1,7 @@
 {
   "id": "tioanime",
   "name": "TioAnime",
-  "version": "1.8.0",
+  "version": "1.8.2",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": "Anime subtitulado en español de TioAnime, con los servidores Voe y YourUpload.",

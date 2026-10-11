@@ -150,13 +150,14 @@ Regla general: **la carátula siempre es la de TioAnime**, nunca una imagen de c
 
 ### Fondos y tarjetas horizontales en la tele
 
-En la tele, Kino dibuja una fila con tarjetas horizontales cuando sus títulos traen `backdrop` (fondo), y verticales cuando solo traen carátula. Las películas siempre traían fondo (TMDB), por eso se veían horizontales; las series de En emisión y Animes no, porque las listas no consultaban TMDB para no gastar su límite. Ahora se completa el fondo de las series así:
+En la tele, Kino dibuja una fila con tarjetas horizontales cuando sus títulos traen `backdrop` (fondo), y verticales cuando solo traen carátula. Las películas siempre traían fondo de TMDB, por eso se veían horizontales; las series de En emisión y Animes no, porque las listas no consultaban TMDB. Ahora las series reciben su fondo (y resumen) de TMDB con la misma mecánica que las películas:
 
-1. **Fondo del sitio**: `/uploads/fondos/<id>.jpg`, donde el id sale de la carátula (`/uploads/portadas/<id>.jpg`). Se comprueba que exista con una petición HEAD (barata, no descarga la imagen), porque en series nuevas puede faltar.
-2. **Fondo de TMDB**, si el del sitio no existe: se busca la serie japonesa de animación y se acepta solo si su nombre comparte al menos el 60 % de las palabras del título (sin año fiable en las tarjetas, ese control evita confundir una serie con otra de su franquicia).
-3. Si ninguno existe, ese título queda vertical (solo carátula).
+- Se busca la serie en TMDB (animación japonesa, título sin "Season N") y se toma su `backdrop_path`.
+- Entre los resultados se prefiere el que comparte al menos el 60 % de las palabras del título. Si ninguno lo hace, solo se acepta uno de estreno reciente (últimos 3 años) o, si el título es una temporada marcada ("... 4", "2nd Season", "II"), el primero; el número final se quita de la búsqueda. Así no se confunde una serie con otra de su franquicia (Steel Ball Run con la primera serie de JoJo).
+- Hasta 12 títulos nuevos por apertura del inicio (3 en paralelo, 3 segundos como máximo); cada resultado se guarda 7 días (1 día si no hubo).
+- Los títulos sin coincidencia segura quedan con tarjeta vertical (solo carátula). Mientras se completa, una fila puede mezclar tarjetas horizontales y verticales; en pocas aperturas queda pareja.
 
-Se hace de forma progresiva: hasta 16 títulos nuevos por apertura del inicio (4 en paralelo, con un tiempo máximo de 3 segundos) y cada resultado se guarda 14 días (1 día si no hubo). Mientras se completa, una fila puede mezclar tarjetas horizontales y verticales; en pocas aperturas queda pareja. La ficha de un anime usa el mismo fondo del sitio cuando TMDB no tiene una coincidencia segura.
+El fondo del propio sitio (`/uploads/fondos/<id>.jpg`) se probó y se descartó: varios salían casi negros en las tarjetas.
 
 ### Películas
 
@@ -173,7 +174,7 @@ TioAnime ofrece carátula, pero no fondo horizontal ni resumen completo en todas
 
 - **Películas** (`movieInfo`): busca en `/search/movie` con el título en español. Si el título trae "Movie 3:" o similar, reintenta sin esa parte. Solo acepta resultados de género animación (id 16) para no confundir con películas reales de mismo nombre.
 - **Series** (`seriesInfo`): busca en `/search/tv` con el título sin "Season N", "2nd Season" o "II". Solo acepta series japonesas (de animación si las hay) y valida el año del sitio: una serie sin marcar de temporada debe haber estrenado hasta 4 años antes del año del sitio; una marcada ("2nd Season", "... 3") solo puede ser anterior o del mismo año. Si ninguna cumple, no se usa TMDB: es preferible no mostrar datos a mostrar los de otra serie de la misma franquicia.
-- **Fichas**: el fondo y la sinopsis salen primero del sitio (`/uploads/fondos/<id>.jpg` y la descripción de la página). Si TMDB tiene una coincidencia segura, su fondo reemplaza al del sitio, y su resumen solo se usa cuando el del sitio es corto (menos de 80 caracteres).
+- **Fichas**: la sinopsis sale primero de la descripción de la página del sitio; el fondo y el resumen de TMDB se usan solo con una coincidencia segura (año del sitio), y el resumen de TMDB solo si el del sitio es corto (menos de 80 caracteres).
 
 Para no pasar el límite de TMDB (pocas consultas por plugin en pocos segundos) ni retrasar el inicio:
 
@@ -223,7 +224,7 @@ El plugin usa `kino.storage` (límite de 256 KB por plugin) con estas claves:
 | --- | --- | --- |
 | `ep1:<slug>` | Ficha leída de un anime (capítulos y datos del sitio), sin TMDB | 12 horas (fresca 10 min) |
 | `row1:<fila>` | Última copia buena de cada fila del inicio (con su hora) | 12 horas |
-| `bd1:<slug>` | Fondo de una serie para las listas (sitio o TMDB; `0` si no hubo) | 14 días (1 día si no hubo) |
+| `bd2:<slug>` | Fondo y resumen de una serie para las listas (TMDB; `0` si no hubo) | 7 días (1 día si no hubo) |
 | `cov1:<slug>` | Carátula encontrada para un anime de En emisión (`0` si no hubo coincidencia) | 7 días (6 horas si no hubo) |
 | `mov2:<slug>` | Fondo, resumen y año de una película (TMDB) | 7 días, o 1 día si no hubo datos |
 | `ser2:<slug>` | Fondo y resumen de una serie (TMDB); se guarda al abrir su ficha | 7 días, o 1 día si no hubo datos |
@@ -265,7 +266,7 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 - **Sin temporadas separadas dentro de una ficha.** Cada temporada que TioAnime trata como serie aparte se muestra como otro anime.
 - **Numeración absoluta sin confirmar.** Cuando TioAnime numera de forma absoluta, la conversión a temporadas de TMDB depende del orden de las temporadas. Puede fallar en series con temporadas especiales o con huecos.
 - **En emisión por título.** La carátula de En emisión se busca por título. Dos animes con títulos casi iguales pueden confundirse; el plugin exige coincidencia de slug, así que en ese caso sale sin carátula.
-- **Series sin fondo en la lista.** El resumen de una serie aparece en la lista solo después de abrir su ficha una vez. El fondo se completa solo (ver arriba); una serie sin fondo en el sitio ni coincidencia en TMDB se queda con tarjeta vertical.
+- **Series sin fondo en la lista.** El fondo y el resumen de una serie se completan solos en las listas (ver arriba); una serie sin coincidencia segura en TMDB se queda con tarjeta vertical.
 - **Películas sin etiqueta.** En la búsqueda, una película que no tenga la etiqueta "Película" en TioAnime sale como serie.
 - **Capítulo 0.** Kino numera los capítulos desde 1, así que cuando una serie tiene capítulo 0 todos los números se muestran +1 ("1. Capítulo 0", "2. Capítulo 1"...). El título y el resumen de TMDB siguen el número real del sitio; lo único que queda corrido son los subtítulos externos que Kino busca por número de episodio, que en esas series llegan con un capítulo de diferencia.
 - **Sin Mega.** Mega cifra cada archivo y la clave va en el enlace; solo su propio reproductor puede descifrarlo, así que un plugin no puede reproducirlo ni descargarlo. Se ignora.
@@ -349,6 +350,8 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.7.0 | Inicio más rápido: se muestra primero lo guardado y solo se espera al sitio una ventana corta (2,5 s si la copia tiene menos de 1 h); las consultas nuevas a TMDB y las búsquedas de carátulas solo se hacen la primera vez. |
 | 1.7.1 | Las carátulas de En emisión se completan en cada apertura (hasta 8 búsquedas nuevas, con tiempo máximo) y se guardan, en vez de buscarse solo la primera vez. |
 | 1.8.0 | En emisión y Animes se ven como Películas en la tele (tarjetas horizontales): las series reciben fondo, del sitio (comprobado con HEAD) o de TMDB, de forma progresiva. La ficha usa el fondo del sitio si TMDB no tiene coincidencia segura. |
+| 1.8.1 | Los fondos de las series en las listas salen de TMDB, con la misma mecánica que las películas; se descarta el fondo del sitio (salía casi negro). |
+| 1.8.2 | En los fondos de las listas, un número al final del título ("... 4") se trata como temporada y se quita de la búsqueda en TMDB. |
 
 ---
 
