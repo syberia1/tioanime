@@ -39,7 +39,7 @@ Este README explica qué hace el plugin, cómo está armado, de dónde saca cada
 | Función de Kino | Qué hace este plugin |
 | --- | --- |
 | **Buscar** | Busca en el directorio de TioAnime. Devuelve animes y películas. |
-| **Inicio (Home)** | Tres filas: **En emisión**, **Animes** y **Películas**, cada una con "Ver más". |
+| **Inicio (Home)** | Cinco filas: **En emisión**, **Animes**, **Películas**, **OVAs** y **Especiales**, cada una (salvo En emisión) con "Ver más". |
 | **Ver más** | Pagina cada fila por el directorio de TioAnime. |
 | **Ficha** | Muestra título, resumen, géneros, fondo y la lista de capítulos. |
 | **Reproducir** | Abre el capítulo en Voe o YourUpload. El servidor que no elijas queda en el menú **Servidor** del reproductor. |
@@ -112,7 +112,7 @@ Una tarjeta del directorio trae el enlace `/anime/<slug>`, el título y la cará
 
 ### Catálogo: inicio, Ver más y búsqueda
 
-- **Inicio** (`home()`) arma tres filas en paralelo. El inicio trabaja con un presupuesto de 17 segundos (Kino corta cualquier llamada a los 20 y deja la lista vacía). Cada fila se guarda al llegar: si la copia tiene menos de 10 minutos se usa sin pedir nada al sitio, y si el sitio falla o tarda, se muestra la última copia buena (hasta 12 horas) en vez de perder la fila. Las lecturas del sitio reintentan una vez ante un error de red, un 429 o un 5xx. Lo que no es esencial (carátulas extra, TMDB) solo se hace si sobra tiempo.
+- **Inicio** (`home()`) arma cinco filas en paralelo. El inicio trabaja con un presupuesto de 17 segundos (Kino corta cualquier llamada a los 20 y deja la lista vacía). Cada fila se guarda al llegar: si la copia tiene menos de 10 minutos se usa sin pedir nada al sitio, y si el sitio falla o tarda, se muestra la última copia buena (hasta 12 horas) en vez de perder la fila. Las lecturas del sitio reintentan una vez ante un error de red, un 429 o un 5xx. Lo que no es esencial (carátulas extra, TMDB) solo se hace si sobra tiempo.
 - **Ver más** (`browse()`) recibe la referencia de la fila (`dir:all`, `type:1`) y la página siguiente. Se detiene cuando el sitio ya no tiene más páginas.
 - **Búsqueda** (`search()`) usa el directorio con `?q=`. Antes de buscar limpia el texto: quita símbolos que confunden la URL y exige al menos dos caracteres.
 
@@ -142,7 +142,7 @@ Regla general: **la carátula siempre es la de TioAnime**, nunca una imagen de c
 
 Una película se detecta de dos formas:
 
-- en el **inicio** y en **Ver más** de la fila Películas, todo lo que sale es película (`type[]=1` del directorio);
+- en el **inicio** y en **Ver más** de la fila Películas, todo lo que sale es película (`type[]=1` del directorio; OVAs y Especiales usan `type[]=2` y `type[]=3`);
 - en la **búsqueda** y en las otras filas, cuando la tarjeta muestra la etiqueta "Película".
 
 Una película se entrega a Kino con `kind: "movie"` y su `ref` apunta directo al capítulo 1 del sitio (`e:<slug>:1`). Así Kino muestra un solo botón "Reproducir" y no una lista de capítulos.
@@ -322,6 +322,7 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.5.1 | TMDB ya no confunde una serie con otra de su franquicia (Steel Ball Run mostraba el fondo y la sinopsis de la primera serie de JoJo): solo se aceptan series japonesas y el año de estreno debe coincidir con el del sitio. La sinopsis y el fondo del sitio se usan cuando TMDB no tiene una coincidencia segura. |
 | 1.5.2 | Se retira la captura con página oculta y el permiso de navegador: la reproducción vuelve a usar solo Voe y YourUpload. Los errores de reproducción muestran el motivo concreto en pantalla. Se deja de usar el fondo del sitio (`/uploads/fondos`), que no existe en series nuevas y dejaba la ficha en negro. |
 | 1.5.3 | Si los embeds de Voe y YourUpload responden 404 (video retirado), el mensaje lo dice y nombra los otros servidores que ofrece el capítulo (por ejemplo Mega o Netu). |
+| 1.6.0 | Nuevas filas **OVAs** y **Especiales** en el inicio, con su "Ver más". |
 
 ---
 

@@ -235,7 +235,8 @@ function hasNextPage(html, page) {
 function dirUrl(kind, page, query) {
   const parts = [];
   if (query) parts.push("q=" + encodeURIComponent(query));
-  if (kind === "type:1") parts.push("type%5B%5D=1");
+  const tm = /^type:([123])$/.exec(kind);
+  if (tm) parts.push("type%5B%5D=" + tm[1]);
   if (page > 1) parts.push("p=" + page);
   return BASE + "/directorio" + (parts.length ? "?" + parts.join("&") : "");
 }
@@ -492,6 +493,20 @@ export async function home() {
       genre: "peliculas",
       load: async () => cardsFrom((await getPage(dirUrl("type:1", 1))).html, { movies: true }).slice(0, 40),
     },
+    {
+      id: "ovas",
+      title: "OVAs",
+      ref: "type:2",
+      genre: "anime",
+      load: async () => cardsFrom((await getPage(dirUrl("type:2", 1))).html).slice(0, 40),
+    },
+    {
+      id: "especiales",
+      title: en ? "Specials" : "Especiales",
+      ref: "type:3",
+      genre: "anime",
+      load: async () => cardsFrom((await getPage(dirUrl("type:3", 1))).html).slice(0, 40),
+    },
   ];
   const loaded = {};
   const rows = await Promise.all(
@@ -532,7 +547,7 @@ export async function home() {
 
 export async function browse(ref, cursor) {
   const kind = String(ref);
-  if (!/^(dir:all|type:1)$/.test(kind)) throw fail("not_found", "browse " + kind, "notFound");
+  if (!/^(dir:all|type:[123])$/.test(kind)) throw fail("not_found", "browse " + kind, "notFound");
   const n = parseInt(cursor, 10);
   const pageNo = n > 0 ? n : 1;
   const page = await getPage(dirUrl(kind, pageNo));
