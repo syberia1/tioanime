@@ -414,7 +414,6 @@ async function airingItems(dirPage, deep) {
   const items = cardsFrom(ul ? ul.html : page.html, { onlyEpisodes: true }).slice(0, 24);
   const dir = await dirPage;
   const seed = dir ? coversFrom(dir.html) : {};
-  const todo = [];
   for (const it of items) {
     const hit = cacheGet("cov1:" + it.id);
     if (hit && hit !== "0") {
@@ -422,19 +421,7 @@ async function airingItems(dirPage, deep) {
     } else if (seed[it.id]) {
       it.poster = seed[it.id];
       cacheSet("cov1:" + it.id, seed[it.id], 7 * 86400000);
-    } else if (!hit && todo.length < 4) {
-      todo.push(it);
     }
-  }
-  // Solo si queda tiempo en el inicio; lo que falte se completa en la próxima carga.
-  if (deep && todo.length && timeLeft() > 5000) {
-    await within(
-      mapLimit(todo, 3, async (it) => {
-        const cover = await coverFor(it);
-        if (cover) it.poster = cover;
-      }),
-      Math.min(5000, timeLeft() - 3000)
-    );
   }
   return items;
 }
@@ -461,13 +448,45 @@ function savedRow(id) {
   }
 }
 
-function saveRow(row) {
+function saveRow(row, t) {
   try {
-    const raw = JSON.stringify({ t: Date.now(), row });
+    const raw = JSON.stringify({ t: t || Date.now(), row });
     if (raw.length < 40000) cacheSet("row1:" + row.id, raw, 12 * 3600000);
   } catch (e) {
     /* sin copia */
   }
+}
+
+// Completa las carátulas que falten en una fila (hoy solo En emisión, que nace de tarjetas de capítulo).
+// Primero lo guardado (instantáneo); lo que siga faltando se busca en el directorio, `maxNew` por llamada y
+// con un tiempo máximo. Cada hallazgo queda en la caché, así que unas pocas aperturas bastan para completarla.
+async function fillCovers(row, maxNew, budgetMs) {
+  const missing = row.items.filter((it) => !it.poster);
+  if (!missing.length) return false;
+  let changed = false;
+  const todo = [];
+  for (const it of missing) {
+    const hit = cacheGet("cov1:" + it.id);
+    if (hit && hit !== "0") {
+      it.poster = hit;
+      changed = true;
+    } else if (!hit && todo.length < maxNew) {
+      todo.push(it);
+    }
+  }
+  if (todo.length && budgetMs > 800) {
+    await within(
+      mapLimit(todo, 4, async (it) => {
+        const cover = await coverFor(it);
+        if (cover) {
+          it.poster = cover;
+          changed = true;
+        }
+      }),
+      budgetMs
+    );
+  }
+  return changed;
 }
 
 // El inicio responde primero con lo guardado y solo espera al sitio una ventana corta:
@@ -511,6 +530,7 @@ export async function home() {
     },
   ];
   const loaded = {};
+  const copyTime = {};
   let deepAny = false;
   const rows = await Promise.all(
     defs.map(async (d) => {
@@ -523,6 +543,7 @@ export async function home() {
       const old = savedRow(d.id);
       const has = old && old.row && old.row.items && old.row.items.length;
       const age = has ? Date.now() - old.t : Infinity;
+      if (has) copyTime[d.id] = old.t;
       if (has && age < ROW_FRESH_MS) return mk(old.row.items);
       const deep = !has; // búsquedas extra (carátulas, TMDB) solo cuando no hay nada guardado que mostrar
       try {
@@ -546,6 +567,18 @@ export async function home() {
   if (everything.length) {
     const fresh = deepAny && timeLeft() > 3500;
     await within(enrichItems(everything, fresh ? 10 : 0), fresh ? Math.min(2000, timeLeft() - 1500) : 500);
+  }
+  // Carátulas que falten en En emisión: se aplican las guardadas y se buscan algunas más (el tiempo que sobre).
+  const airing = shown.filter((r) => r.id === "en-emision")[0];
+  if (airing) {
+    const budget = Math.min(loaded["en-emision"] ? 5000 : 3500, timeLeft() - 3000);
+    try {
+      if ((await fillCovers(airing, loaded["en-emision"] ? 8 : 6, budget)) && !loaded["en-emision"] && copyTime["en-emision"]) {
+        saveRow(airing, copyTime["en-emision"]); // copia vieja con carátulas nuevas: conserva su edad
+      }
+    } catch (e) {
+      kino.log("carátulas: " + (e && e.message));
+    }
   }
   // Se guarda cada fila ya completa para las próximas cargas.
   for (const row of shown) if (loaded[row.id]) saveRow(row);

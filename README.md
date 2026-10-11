@@ -136,9 +136,9 @@ Como esos datos vienen de tarjetas de capítulo, la carátula real no está en l
 
 1. de la caché (`cov1:<slug>`, una semana);
 2. de la primera página del directorio, que el inicio ya leyó para la fila Animes (se aprovecha sin una lectura extra);
-3. de una búsqueda en el directorio por título, solo para los que sigan sin carátula: como mucho 6 por carga y con 6 segundos de límite. Si no hay coincidencia exacta de slug, se recuerda 6 horas y el anime sale sin carátula en vez de con una equivocada.
+3. de una búsqueda en el directorio por título, solo para los que sigan sin carátula. Esta búsqueda se hace aparte de la carga de la fila, en cada apertura del inicio: hasta 6 o 8 títulos nuevos por vez (4 en paralelo) y con un tiempo máximo de 3,5 a 5 segundos. Cada hallazgo se guarda, así que en pocas aperturas la fila queda completa; cuando ya no falta ninguna, no cuesta tiempo. Si no hay coincidencia exacta de slug, se recuerda 6 horas y el anime sale sin carátula en vez de con una equivocada.
 
-Con esto, la fila completa sus carátulas en una o dos cargas del inicio.
+Las carátulas que se completan en una apertura se agregan también a la copia guardada de la fila, sin cambiar su edad.
 
 ### Carátulas
 
@@ -336,6 +336,7 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.6.1 | TMDB también en las filas OVAs y Especiales (búsqueda tolerante sin las palabras OVA/Special, en series y películas); en la ficha de un OVA o especial no se buscan capítulos en TMDB. |
 | 1.6.2 | Se retiran las filas OVAs y Especiales del inicio (y su búsqueda en TMDB). |
 | 1.7.0 | Inicio más rápido: se muestra primero lo guardado y solo se espera al sitio una ventana corta (2,5 s si la copia tiene menos de 1 h); las consultas nuevas a TMDB y las búsquedas de carátulas solo se hacen la primera vez. |
+| 1.7.1 | Las carátulas de En emisión se completan en cada apertura (hasta 8 búsquedas nuevas, con tiempo máximo) y se guardan, en vez de buscarse solo la primera vez. |
 
 ---
 
