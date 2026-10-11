@@ -228,6 +228,11 @@ function cardsFrom(html, opts) {
   return items;
 }
 
+function markSub(items) {
+  for (const it of items) SUB_IDS[it.id] = true;
+  return items;
+}
+
 function hasNextPage(html, page) {
   return new RegExp("[?&;]p=" + (page + 1) + "(?![0-9])").test(html);
 }
@@ -356,33 +361,82 @@ async function seriesInfo(title, year) {
   };
 }
 
+// ---- OVAs y Especiales ----
+// En TMDB casi nunca tienen su propia serie con el mismo título ("... OVA", "... Special"), así que se
+// busca el nombre sin esas palabras, en series y en películas, y se acepta solo un resultado japonés de
+// animación cuyo nombre comparta la mayoría de las palabras del título (no hay año fiable en las tarjetas).
+// Los capítulos de un OVA o especial no se buscan en TMDB: su numeración no coincide con la del sitio.
+const SUB_IDS = {};
+const SUB_WORDS = /\b(ova|ovas|oad|ona|special|specials|especial|especiales|extra)\b/gi;
+
+function norm(s) {
+  let x = String(s || "").toLowerCase();
+  if (x.normalize) x = x.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return x.replace(/[^a-z0-9]+/g, " ").trim();
+}
+function wordsOf(s) {
+  return norm(s).split(" ").filter((w) => w.length >= 3);
+}
+function looseMatch(r, base) {
+  const q = wordsOf(base);
+  if (!q.length) return false;
+  const names = wordsOf((r.name || r.title || "") + " " + (r.original_name || r.original_title || ""));
+  return q.filter((w) => names.indexOf(w) >= 0).length / q.length >= 0.6;
+}
+
+async function subInfo(title) {
+  if (typeof kino.tmdb !== "function") return null;
+  const base = String(title).replace(SUB_WORDS, " ").replace(/\s+/g, " ").replace(/[:\-–]\s*$/, "").trim();
+  if (base.length < 2) return null;
+  for (const path of ["/search/tv", "/search/movie"]) {
+    const r = await kino.tmdb(path, { query: base, language: "es-MX", include_adult: false });
+    const list = ((r && r.results) || []).filter(
+      (x) => x && x.id && x.original_language === "ja" && (x.genre_ids || []).indexOf(16) >= 0 && looseMatch(x, base)
+    );
+    const hit = list[0];
+    if (hit) {
+      return {
+        overview: String(hit.overview || "").slice(0, 700),
+        backdrop: hit.backdrop_path ? TMDB_BACK + hit.backdrop_path : "",
+        year: path === "/search/movie" ? String(hit.release_date || "").slice(0, 4) : "",
+      };
+    }
+  }
+  return null;
+}
+
+function infoKey(item, sub) {
+  return (sub ? "sub1:" : item.kind === "movie" ? "mov2:" : "ser2:") + item.id;
+}
+
 // Con caché (una semana si hubo datos, un día si no). Lanza si TMDB falla: así no se guarda un "sin datos" falso.
-async function infoFor(item) {
-  const key = (item.kind === "movie" ? "mov2:" : "ser2:") + item.id;
+async function infoFor(item, sub) {
+  const key = infoKey(item, sub);
   const hit = cacheGet(key);
   if (hit) return hit === "0" ? null : JSON.parse(hit);
-  const info = item.kind === "movie" ? await movieInfo(item.title) : await seriesInfo(item.title, item.year);
+  const info = sub ? await subInfo(item.title) : item.kind === "movie" ? await movieInfo(item.title) : await seriesInfo(item.title, item.year);
   cacheSet(key, info ? JSON.stringify(info) : "0", info ? 7 * 86400000 : 86400000);
   return info;
 }
 
-// Pone resumen y fondo a los títulos de la lista. Las películas consultan TMDB (como mucho `cap`
-// veces nuevas); las series solo usan lo que ya está en la caché, porque su ficha (episodes) lo
+// Pone resumen y fondo a los títulos de la lista. Películas, OVAs y Especiales consultan TMDB (como mucho
+// `cap` veces nuevas); las series solo usan lo que ya está en la caché, porque su ficha (episodes) lo
 // consulta y guarda al abrirla. Así el inicio casi no gasta consultas de TMDB.
 async function enrichItems(items, cap) {
   let fresh = 0;
   const todo = [];
   for (const it of items) {
-    const hit = cacheGet((it.kind === "movie" ? "mov2:" : "ser2:") + it.id);
+    const sub = !!SUB_IDS[it.id];
+    const hit = cacheGet(infoKey(it, sub));
     if (hit) applyInfo(it, hit === "0" ? null : JSON.parse(hit));
-    else if (it.kind === "movie" && fresh < cap) {
+    else if ((it.kind === "movie" || sub) && fresh < cap) {
       fresh++;
       todo.push(it);
     }
   }
   await mapLimit(todo, 3, async (it) => {
     try {
-      applyInfo(it, await infoFor(it));
+      applyInfo(it, await infoFor(it, !!SUB_IDS[it.id]));
     } catch (e) {
       kino.log("sin datos de TMDB: " + (e && e.message));
     }
@@ -498,14 +552,14 @@ export async function home() {
       title: "OVAs",
       ref: "type:2",
       genre: "anime",
-      load: async () => cardsFrom((await getPage(dirUrl("type:2", 1))).html).slice(0, 40),
+      load: async () => markSub(cardsFrom((await getPage(dirUrl("type:2", 1))).html).slice(0, 40)),
     },
     {
       id: "especiales",
       title: en ? "Specials" : "Especiales",
       ref: "type:3",
       genre: "anime",
-      load: async () => cardsFrom((await getPage(dirUrl("type:3", 1))).html).slice(0, 40),
+      load: async () => markSub(cardsFrom((await getPage(dirUrl("type:3", 1))).html).slice(0, 40)),
     },
   ];
   const loaded = {};
@@ -552,6 +606,7 @@ export async function browse(ref, cursor) {
   const pageNo = n > 0 ? n : 1;
   const page = await getPage(dirUrl(kind, pageNo));
   const items = cardsFrom(page.html, { movies: kind === "type:1" });
+  if (kind === "type:2" || kind === "type:3") markSub(items);
   await within(enrichItems(items, 10), 4000);
   const out = { items };
   if (items.length && hasNextPage(page.html, pageNo)) out.next = String(pageNo + 1);
@@ -722,6 +777,11 @@ function parseAnimePage(html, slug) {
   }
   const genres = kino.html.select(html, ".genres a").map((g) => g.text.trim()).filter(Boolean);
   if (genres.length) info.genres = genres.slice(0, 5).map((g) => g.slice(0, 30));
+  // Tipo (OVA, Especial...) en la parte alta de la ficha, junto al título.
+  const h1i = html.indexOf("<h1");
+  const top = h1i >= 0 ? html.slice(Math.max(0, h1i - 800), h1i + 1500) : html.slice(0, 3000);
+  const tm = /anime-type-(ova|especial|special)|>\s*(OVA|Especial)\s*</i.exec(top);
+  if (tm) info.type = String(tm[1] || tm[2]).toLowerCase();
   const year = kino.html.select(html, "span.year")[0];
   if (year && /\d{4}/.test(year.text)) info.year = /\d{4}/.exec(year.text)[0];
   const am = /var\s+anime_info\s*=\s*\[([^\]]*)\]/.exec(html);
@@ -772,8 +832,10 @@ export async function episodes(ref) {
   const info = Object.assign({}, data.info);
   const slugTitle = slug.replace(/-/g, " ");
   // TMDB solo si sobra tiempo (Kino corta la llamada a los 20 s); lo que no llegue sale en la próxima apertura.
+  const sub = /^(ova|especial|special)$/.test(info.type || "");
+  delete info.type; // dato interno: Kino no lo recibe
   let extras = {};
-  if (left() > 3000) {
+  if (!sub && left() > 3000) {
     const got = await within(
       episodeExtras(slug, info.title || slugTitle, parseInt(info.year, 10) || 0, numbers.length ? numbers[numbers.length - 1] : 0),
       Math.min(6000, left() - 1500)
@@ -802,7 +864,7 @@ export async function episodes(ref) {
     return ep;
   });
   try {
-    const extra = left() > 2500 ? await within(infoFor({ id: slug, kind: "series", title: info.title || slugTitle, year: parseInt(info.year, 10) || 0 }), Math.min(3000, left() - 1000)) : null;
+    const extra = left() > 2500 ? await within(infoFor({ id: slug, kind: "series", title: info.title || slugTitle, year: parseInt(info.year, 10) || 0 }, sub), Math.min(3000, left() - 1000)) : null;
     if (extra && extra !== LATE) {
       if (extra.backdrop) info.backdrop = extra.backdrop;
       if (extra.overview && (info.overview || "").length < 80) info.overview = extra.overview;

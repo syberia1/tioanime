@@ -159,6 +159,7 @@ Para no pasar el límite de TMDB (pocas consultas por plugin en pocos segundos) 
 
 - **Series:** las listas no consultan TMDB. Usan solo lo que ya está en la caché, que se llena cuando alguien abre la ficha de una serie. Un título que nunca se abrió sale en la lista solo con su carátula.
 - **Películas:** son las únicas que consultan TMDB desde las listas (hasta 10 nuevas por carga del inicio, 6 en la búsqueda), porque no tienen ficha de capítulos que traiga esos datos.
+- **OVAs y Especiales:** también consultan TMDB desde sus filas (hasta 10 nuevas por carga), con una búsqueda más tolerante: se quita "OVA", "Special" o "Especial" del título, se busca en series y en películas, y solo se acepta un resultado japonés de animación cuyo nombre comparta al menos el 60 % de las palabras del título (las tarjetas no traen año, así que no se puede validar por año). El resumen y el fondo suelen ser los de la serie principal. La ficha de un OVA o especial usa lo mismo, y sus capítulos no se buscan en TMDB porque su numeración no coincide con la del sitio.
 - **Tiempo máximo:** la información de TMDB espera como mucho 4 segundos; si no llega, la lista sale igual y se completa en la siguiente carga, desde la caché.
 
 Si TMDB no responde, la función lanza error y **no** se guarda un "sin datos", para que la siguiente carga vuelva a intentarlo. Si TMDB responde pero no encuentra el título, sí se guarda "sin datos" durante un día.
@@ -205,6 +206,7 @@ El plugin usa `kino.storage` (límite de 256 KB por plugin) con estas claves:
 | `row1:<fila>` | Última copia buena de cada fila del inicio (con su hora) | 12 horas |
 | `cov1:<slug>` | Carátula encontrada para un anime de En emisión (`0` si no hubo coincidencia) | 7 días (6 horas si no hubo) |
 | `mov2:<slug>` | Fondo, resumen y año de una película (TMDB) | 7 días, o 1 día si no hubo datos |
+| `sub1:<slug>` | Fondo y resumen de un OVA o especial (TMDB) | 7 días, o 1 día si no hubo datos |
 | `ser2:<slug>` | Fondo y resumen de una serie (TMDB); se guarda al abrir su ficha | 7 días, o 1 día si no hubo datos |
 | `tmdb2:<slug>` | Imagen, título y resumen por capítulo (TMDB) | 6 horas |
 
@@ -323,6 +325,7 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.5.2 | Se retira la captura con página oculta y el permiso de navegador: la reproducción vuelve a usar solo Voe y YourUpload. Los errores de reproducción muestran el motivo concreto en pantalla. Se deja de usar el fondo del sitio (`/uploads/fondos`), que no existe en series nuevas y dejaba la ficha en negro. |
 | 1.5.3 | Si los embeds de Voe y YourUpload responden 404 (video retirado), el mensaje lo dice y nombra los otros servidores que ofrece el capítulo (por ejemplo Mega o Netu). |
 | 1.6.0 | Nuevas filas **OVAs** y **Especiales** en el inicio, con su "Ver más". |
+| 1.6.1 | TMDB también en las filas OVAs y Especiales (búsqueda tolerante sin las palabras OVA/Special, en series y películas); en la ficha de un OVA o especial no se buscan capítulos en TMDB. |
 
 ---
 
