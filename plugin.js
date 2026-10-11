@@ -457,6 +457,101 @@ function saveRow(row, t) {
   }
 }
 
+// ---------- Fondos para las filas (la tele dibuja tarjetas horizontales si el título trae `backdrop`) ----------
+// Una fila de la tele se ve horizontal solo cuando sus títulos traen fondo (las películas lo traen de TMDB). Las series
+// salían sin fondo en las listas (para no gastar consultas de TMDB), por eso se veían verticales. Ahora se completa:
+//  1. fondo del propio sitio, /uploads/fondos/<id>.jpg (el id sale de la carátula), comprobado con una petición HEAD
+//     (barata, sin descargar la imagen); en series nuevas puede no existir;
+//  2. si no existe, fondo de TMDB, aceptado solo si el nombre comparte la mayoría de las palabras del título.
+// Se hace de forma progresiva (unos 16 títulos por apertura) y cada resultado se guarda, igual que las carátulas.
+
+function norm(s) {
+  let x = String(s || "").toLowerCase();
+  if (x.normalize) x = x.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return x.replace(/[^a-z0-9]+/g, " ").trim();
+}
+function wordsOf(s) {
+  return norm(s).split(" ").filter((w) => w.length >= 3);
+}
+function looseMatch(r, base) {
+  const q = wordsOf(base);
+  if (!q.length) return false;
+  const names = wordsOf((r.name || r.title || "") + " " + (r.original_name || r.original_title || ""));
+  return q.filter((w) => names.indexOf(w) >= 0).length / q.length >= 0.6;
+}
+
+async function tmdbBackdrop(title) {
+  if (typeof kino.tmdb !== "function") return "";
+  const sp = splitTitle(title);
+  const q = sp.base.length >= 2 ? sp.base : title;
+  const r = await kino.tmdb("/search/tv", { query: q, language: "es-MX", include_adult: false });
+  const hit = ((r && r.results) || []).filter(
+    (x) => x && x.id && x.original_language === "ja" && (x.genre_ids || []).indexOf(16) >= 0 && x.backdrop_path && looseMatch(x, q)
+  )[0];
+  return hit ? TMDB_BACK + hit.backdrop_path : "";
+}
+
+// Fondo de una serie: del sitio si existe, si no de TMDB. Con caché (14 días; un día si no hubo). Lanza ante un
+// fallo de red o de tiempo, para no guardar un "no hay" falso.
+async function backdropFor(item, siteOnly) {
+  const key = "bd1:" + item.id;
+  const hit = cacheGet(key);
+  if (hit) return hit === "0" ? "" : hit;
+  let url = "";
+  const m = /\/portadas\/(\d+)\./.exec(item.poster || "");
+  if (m) {
+    const cand = BASE + "/uploads/fondos/" + m[1] + ".jpg";
+    const r = await kino.fetch(cand, { method: "HEAD", timeoutMs: 6000 });
+    if (r.ok && /image/i.test((r.headers && r.headers["content-type"]) || "")) url = cand;
+  }
+  if (!url && !siteOnly) url = await tmdbBackdrop(item.title);
+  cacheSet(key, url || "0", (url ? 14 : 1) * 86400000);
+  return url;
+}
+
+// Pone el fondo guardado a las series de las filas y busca los que falten (`maxNew` por llamada, con tiempo máximo).
+// Devuelve los ids de fila que cambiaron.
+async function fillBackdrops(rows, maxNew, budgetMs) {
+  const changed = {};
+  const apply = () => {
+    for (const row of rows) {
+      for (const it of row.items) {
+        if (it.backdrop || it.kind === "movie") continue;
+        const hit = cacheGet("bd1:" + it.id);
+        if (hit && hit !== "0") {
+          it.backdrop = hit;
+          changed[row.id] = true;
+        }
+      }
+    }
+  };
+  apply();
+  const todo = [];
+  const seen = {};
+  for (const row of rows) {
+    for (const it of row.items) {
+      if (it.backdrop || it.kind === "movie" || !it.poster || seen[it.id] || todo.length >= maxNew) continue;
+      if (cacheGet("bd1:" + it.id)) continue;
+      seen[it.id] = true;
+      todo.push(it);
+    }
+  }
+  if (todo.length && budgetMs > 800) {
+    await within(
+      mapLimit(todo, 4, async (it) => {
+        try {
+          await backdropFor(it);
+        } catch (e) {
+          kino.log("fondo: " + (e && e.message));
+        }
+      }),
+      budgetMs
+    );
+    apply();
+  }
+  return changed;
+}
+
 // Completa las carátulas que falten en una fila (hoy solo En emisión, que nace de tarjetas de capítulo).
 // Primero lo guardado (instantáneo); lo que siga faltando se busca en el directorio, `maxNew` por llamada y
 // con un tiempo máximo. Cada hallazgo queda en la caché, así que unas pocas aperturas bastan para completarla.
@@ -579,6 +674,18 @@ export async function home() {
     } catch (e) {
       kino.log("carátulas: " + (e && e.message));
     }
+  }
+  // Fondos de En emisión y Animes (tarjetas horizontales en la tele).
+  try {
+    const bdRows = shown.filter((r) => r.id === "en-emision" || r.id === "animes");
+    if (bdRows.length) {
+      const changed = await fillBackdrops(bdRows, 16, Math.min(3000, timeLeft() - 2500));
+      for (const row of bdRows) {
+        if (changed[row.id] && !loaded[row.id] && copyTime[row.id]) saveRow(row, copyTime[row.id]);
+      }
+    }
+  } catch (e) {
+    kino.log("fondos: " + (e && e.message));
   }
   // Se guarda cada fila ya completa para las próximas cargas.
   for (const row of shown) if (loaded[row.id]) saveRow(row);
@@ -849,6 +956,14 @@ export async function episodes(ref) {
     }
   } catch (e) {
     kino.log("ficha sin TMDB: " + (e && e.message));
+  }
+  if (!info.backdrop && info.poster && left() > 2500) {
+    try {
+      const got = await within(backdropFor({ id: slug, title: info.title || slugTitle, poster: info.poster }, true), Math.min(3000, left() - 1000));
+      if (got && got !== LATE) info.backdrop = got;
+    } catch (e) {
+      kino.log("ficha sin fondo del sitio: " + (e && e.message));
+    }
   }
   return { series: info, episodes: list };
 }
