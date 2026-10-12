@@ -20,7 +20,7 @@ Este README explica qué hace el plugin, cómo está armado, de dónde saca cada
    - [Películas](#películas)
    - [Fondos y resúmenes (TMDB)](#fondos-y-resúmenes-tmdb)
    - [Ficha de un anime y capítulos](#ficha-de-un-anime-y-capítulos)
-   - [Reproducción: Voe y YourUpload](#reproducción-voe-y-yourupload)
+   - [Reproducción: servidores de video](#reproducción-servidores-de-video)
    - [Caché](#caché)
    - [Idioma](#idioma)
 6. [Ajustes](#ajustes)
@@ -42,7 +42,7 @@ Este README explica qué hace el plugin, cómo está armado, de dónde saca cada
 | **Inicio (Home)** | Tres filas: **En emisión**, **Animes** y **Películas**, cada una (salvo En emisión) con "Ver más". |
 | **Ver más** | Pagina cada fila por el directorio de TioAnime. |
 | **Ficha** | Muestra título, resumen, géneros, fondo y la lista de capítulos. |
-| **Reproducir** | Abre el capítulo en Voe o YourUpload. El servidor que no elijas queda en el menú **Servidor** del reproductor. |
+| **Reproducir** | Abre el capítulo en el servidor preferido; los demás servidores compatibles del capítulo quedan en el menú **Servidor** del reproductor. |
 | **Descargar** | Kino guarda el capítulo en el dispositivo (capacidad `download`). |
 
 Lo que **no** hace: no maneja cuentas de TioAnime y no guarda nada en la nube. Las descargas las hace Kino con el video que el plugin le entrega (ver [Descargas](#descargas)).
@@ -54,7 +54,7 @@ Lo que **no** hace: no maneja cuentas de TioAnime y no guarda nada en la nube. L
 1. En Kino, abre **Ajustes ▸ Plugins**.
 2. Escribe la dirección del repositorio: `usuario/tioanime-kino` (o la que corresponda).
 3. Kino te mostrará los hosts a los que se conectará y pedirá tu aprobación. Acepta; sin eso el plugin no hace nada.
-4. Opcional: en la pestaña del plugin elige el **Servidor preferido** (Voe o YourUpload).
+4. Opcional: en la pestaña del plugin elige el **Servidor preferido** (Voe, YourUpload, Okru, Mp4Upload, StreamWish, FileMoon, VidHide o Mixdrop).
 
 Para actualizar, busca "Buscar actualización" en el mismo lugar.
 
@@ -184,6 +184,15 @@ Para no pasar el límite de TMDB (pocas consultas por plugin en pocos segundos) 
 
 Si TMDB no responde, la función lanza error y **no** se guarda un "sin datos", para que la siguiente carga vuelva a intentarlo. Si TMDB responde pero no encuentra el título, sí se guarda "sin datos" durante un día.
 
+### MyAnimeList (Jikan)
+
+Cuando TMDB no tiene datos de un anime, la ficha recurre a MyAnimeList mediante Jikan, su API pública sin llave. TioAnime separa las temporadas igual que MyAnimeList (cada temporada es otra entrada), así que la numeración de capítulos coincide, y los títulos romaji del sitio se encuentran bien.
+
+- **Búsqueda:** `api.jikan.moe/v4/anime?q=<título>`. Se acepta la entrada cuyo título (romaji, inglés, japonés o sinónimo) comparta al menos el 70 % de las palabras y, si ambos años se conocen, esté a menos de un año de diferencia.
+- **Capítulos:** `/anime/<id>/episodes` (hasta 3 páginas): título y fecha de cada capítulo. Los títulos están en inglés.
+- **Fondo de respaldo:** la imagen del tráiler (`maximum_image_url`), solo en la ficha y solo si ni TMDB dio fondo; es horizontal pero depende de que el tráiler exista.
+- **Límites:** Jikan permite unas 3 peticiones por segundo, por eso solo se usa en la ficha, con caché de 6 horas (24 si no hubo coincidencia) y con un tiempo máximo de 5 segundos.
+
 ### Ficha de un anime y capítulos
 
 `episodes()` hace lo siguiente:
@@ -198,19 +207,30 @@ Los datos de TMDB por capítulo se guardan seis horas. Si el capítulo no tiene 
 
 La temporada siempre es 1 en el plugin. TioAnime no separa temporadas dentro de una misma ficha; cuando una temporada es una serie aparte en TioAnime, aparece como otro anime con su propio slug.
 
-### Reproducción: Voe y YourUpload
+### Reproducción: servidores de video
 
 Cuando una persona pulsa reproducir, `resolve()` hace:
 
-1. Lee `/ver/<slug>-<n>` y busca la variable `videos` de la página. Tiene una lista con el nombre del servidor y su URL de embed. El plugin se queda solo con **Voe** y **YourUpload**; otros servidores (como Mega o Okru) se ignoran.
-2. Ordena los servidores según el ajuste **Servidor preferido**.
-3. Intenta abrir el primero:
-   - **Voe**: sigue hasta dos redirecciones, busca el bloque JSON ofuscado (`application/json`) y lo decodifica (ROT13, quitar marcas, base64, restar 3 a cada carácter, invertir, base64, JSON). Si no está, prueba el formato anterior (`'hls'` y `'mp4'` en base64) y, como último recurso, busca cualquier `.m3u8` o `.mp4` en el HTML.
-   - **YourUpload**: lee `file:`, luego `og:video`, luego `<source>`.
-4. Si ese servidor falla, prueba el siguiente.
-5. El servidor que sí funcionó es el que Kino reproduce. Los demás quedan como **copias diferidas** en el menú **Servidor** del reproductor: Kino solo los resuelve cuando la persona los elige o cuando el primero falla.
+1. Lee `/ver/<slug>-<n>` y busca la variable `videos` de la página: una lista con el nombre del servidor y la dirección de su embed. Cada servidor se clasifica por su nombre y por su dominio (`classifyServer()`). Los que el plugin sabe abrir pasan; los demás (por ejemplo Mega o Netu) se descartan y se nombran en los mensajes de error.
+2. Ordena los servidores: primero el del ajuste **Servidor preferido**, luego el resto en el orden del sitio.
+3. Intenta abrir el primero con su lector. Si falla, prueba el siguiente; si ya pasaron 12 segundos (Kino corta `resolve` a los 20), deja de intentar.
+4. El servidor que funcionó es el que Kino reproduce. Los demás quedan como **copias diferidas** en el menú **Servidor** del reproductor (hasta 8), y Kino solo los resuelve cuando la persona los elige o cuando falla el primero.
 
-Los encabezados `Referer` y `User-Agent` se envían con cada petición del video, porque Voe y YourUpload los exigen.
+Servidores compatibles y cómo se leen:
+
+| Servidor | Cómo se lee |
+| --- | --- |
+| **Voe** | Sigue hasta dos redirecciones, busca el bloque JSON ofuscado (`application/json`) y lo decodifica (ROT13, quitar marcas, base64, restar 3 a cada carácter, invertir, base64, JSON). Si no está, prueba el formato anterior (`'hls'` y `'mp4'` en base64) y, como último recurso, busca cualquier `.m3u8` o `.mp4` en el HTML. |
+| **YourUpload** | Lee `file:`, luego `og:video`, luego `<source>`. |
+| **Okru** | Lee el atributo `data-options` (JSON dentro de JSON) y toma la lista HLS o, si no hay, el MP4 de mejor calidad (deja el MP4 como copia). |
+| **Mp4Upload** | Desempaqueta el script (p.a.c.k.e.r) y busca `player.src(...)`. |
+| **StreamWish, VidHide** | Desempaquetan el reproductor JW y toman `hls*`, `file:` o `sources`. |
+| **FileMoon** | Primero el mismo método de JW; si no sirve, la lista de reproducción cifrada con AES-GCM de su API. |
+| **Mixdrop** | Desempaqueta el script y toma `wurl`. |
+
+Mega (el archivo va cifrado y solo su propio reproductor lo descifra) y Netu (protecciones que un plugin no puede leer) no se pueden abrir desde un plugin.
+
+Los encabezados `Referer` y `User-Agent` se envían con cada petición del video, porque estos servidores los exigen. Los lectores de Okru, Mp4Upload, StreamWish, VidHide, FileMoon y Mixdrop están escritos a partir del comportamiento conocido de cada servidor y probados solo con datos simulados.
 
 ### Descargas
 
@@ -222,6 +242,7 @@ El plugin usa `kino.storage` (límite de 256 KB por plugin) con estas claves:
 
 | Clave | Contenido | Duración |
 | --- | --- | --- |
+| `jk1:<slug>` | Datos de MyAnimeList de un anime (id, fondo, títulos y fechas de capítulos) | 6 horas (24 si no hubo) |
 | `ep1:<slug>` | Ficha leída de un anime (capítulos y datos del sitio), sin TMDB | 12 horas (fresca 10 min) |
 | `row2:<fila>` | Última copia buena de cada fila del inicio (con su hora) | 12 horas |
 | `bd2:<slug>` | Fondo y resumen de una serie para las listas (TMDB; `0` si no hubo) | 7 días (1 día si no hubo) |
@@ -253,7 +274,7 @@ El plugin no pide cuenta ni llave de API. La llave de TMDB la pone Kino, o la pe
 El manifiesto declara:
 
 - `tioanime.com` y `*.tioanime.com`: el sitio de catálogo.
-- `fetchHosts: "any"` y `streamHosts: "any"`: Voe y YourUpload cambian de dominio y de servidor de video con frecuencia, así que no se pueden listar uno por uno.
+- `fetchHosts: "any"` y `streamHosts: "any"`: los servidores de video (Voe, Okru, StreamWish…) cambian de dominio y de servidor de video con frecuencia, así que no se pueden listar uno por uno.
 
 Por eso Kino muestra al instalar que el plugin puede conectarse a cualquier host público. Eso es consecuencia directa de cómo funcionan esos servidores, no de algo que el plugin necesite para otra cosa. El plugin no envía datos personales a ningún lado: solo hace peticiones de lectura y pide el video.
 
@@ -270,7 +291,7 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 - **Películas sin etiqueta.** En la búsqueda, una película que no tenga la etiqueta "Película" en TioAnime sale como serie.
 - **Capítulo 0.** Kino numera los capítulos desde 1, así que cuando una serie tiene capítulo 0 todos los números se muestran +1 ("1. Capítulo 0", "2. Capítulo 1"...). El título y el resumen de TMDB siguen el número real del sitio; lo único que queda corrido son los subtítulos externos que Kino busca por número de episodio, que en esas series llegan con un capítulo de diferencia.
 - **Sin Mega.** Mega cifra cada archivo y la clave va en el enlace; solo su propio reproductor puede descifrarlo, así que un plugin no puede reproducirlo ni descargarlo. Se ignora.
-- **Capítulos sin Voe ni YourUpload, o con el video borrado.** El plugin solo usa esos dos servidores. Si un capítulo ofrece únicamente otros (por ejemplo Mega u Okru), o el video fue retirado, la reproducción falla y el mensaje en pantalla dice qué servidores tiene el capítulo o el motivo de cada fallo ("Voe: video borrado. YourUpload: HTTP 403. En el sitio solo hay: Mega, Netu.").
+- **Capítulos sin servidores compatibles, o con el video borrado.** Mega y Netu no se pueden abrir desde un plugin. Si un capítulo ofrece únicamente esos, o el video de todos los demás fue retirado, la reproducción falla y el mensaje en pantalla dice qué servidores tiene el capítulo o el motivo de cada fallo ("Voe: video borrado. YourUpload: HTTP 403. En el sitio solo hay: Mega, Netu.").
 - **Sitio lento.** Si TioAnime tarda más de 14 segundos en responder (por ejemplo, con una VPN), la ficha y las filas del inicio salen de la última copia guardada; sin copia previa, la primera vez falla con el aviso de que el sitio no responde.
 - **Dependencia de HTML.** El plugin funciona mientras TioAnime conserve su estructura de páginas. Un cambio de diseño puede vaciar filas o capítulos sin dar error visible.
 
@@ -286,7 +307,8 @@ TMDB no necesita entrada en `hosts`, porque se consulta a través de `kino.tmdb`
 | Capítulos no aparecen | Cambió la variable `episodes` o los enlaces `/ver/` | `episodes()` |
 | Capítulos sin imagen ni resumen | TMDB no encontró la serie, o la numeración no coincide | `tmdbEpisodes()`, `splitTitle()`, `pickShow()` |
 | Películas salen como serie | La tarjeta cambió la etiqueta "Película" | `cardsFrom()` (regex de la etiqueta) |
-| Reproducción falla en ambos servidores | Voe o YourUpload cambiaron su código | `voeExtract()`, `decodeVoe()`, `yourUploadStream()` |
+| Reproducción falla en un servidor | Ese servidor cambió su código o retiró el video | su lector: `voeExtract()`, `yourUploadStream()`, `okruStream()`, `mp4uploadStream()`, `jwStream()`, `byseStream()`, `mixdropStream()` |
+| Un servidor nuevo no aparece | `classifyServer()` no lo reconoce | agregarlo a `KIND_LABEL`, `classifyServer()` y `STREAMERS` |
 | Reproducción falla solo en Voe | Voe cambió la ofuscación del JSON | `decodeVoe()` (lista de marcas y desplazamiento) |
 | "Servidor preferido" no tiene efecto | Cambió el nombre del servidor en `var videos` | `listServers()` |
 
@@ -353,13 +375,15 @@ Antes de publicar una versión, prueba en la app: inicio, Ver más, búsqueda, u
 | 1.8.1 | Los fondos de las series en las listas salen de TMDB, con la misma mecánica que las películas; se descarta el fondo del sitio (salía casi negro). |
 | 1.8.2 | En los fondos de las listas, un número al final del título ("... 4") se trata como temporada y se quita de la búsqueda en TMDB. |
 | 1.8.3 | Las copias guardadas de las filas se renuevan (`row2`) y se descartan en ellas los fondos que no sean de TMDB: las copias de la 1.8.0 traían fondos del sitio que impedían poner los de TMDB y dejaban tarjetas vacías en la tele. Hasta 18 fondos nuevos por apertura. |
+| 1.9.0 | Todos los servidores compatibles del sitio: además de Voe y YourUpload, Okru, Mp4Upload, StreamWish, FileMoon, VidHide y Mixdrop, con el servidor preferido a elección. Datos de MyAnimeList (Jikan) como respaldo de TMDB para títulos y fechas de capítulos y un fondo en la ficha. |
 
 ---
 
 ## Créditos y aviso legal
 
 - **TioAnime** es el sitio que ofrece el catálogo y los enlaces; los capítulos están en sus servidores externos.
-- **Voe** y **YourUpload** alojan los videos. Los derechos de cada anime pertenecen a sus autores y distribuidores.
+- Los servidores de video (**Voe**, **YourUpload**, **Okru**, **Mp4Upload**, **StreamWish**, **FileMoon**, **VidHide** y **Mixdrop**) alojan los videos. Los derechos de cada anime pertenecen a sus autores y distribuidores.
+- **MyAnimeList** (a través de **Jikan**) aporta títulos y fechas de capítulos cuando TMDB no tiene datos; este plugin no está respaldado por ellos.
 - **TMDB** aporta fondos, resúmenes e imágenes de capítulos. Este plugin no está respaldado por TMDB.
 - **Kino** y su API de plugins son de sus autores (kinotvapp).
 

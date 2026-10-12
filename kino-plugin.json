@@ -1,10 +1,10 @@
 {
   "id": "tioanime",
   "name": "TioAnime",
-  "version": "1.8.3",
+  "version": "1.9.0",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Anime subtitulado en español de TioAnime, con los servidores Voe y YourUpload.",
+  "description": "Anime subtitulado en español de TioAnime, con todos los servidores de video compatibles (Voe, YourUpload, Okru, Mp4Upload, StreamWish, FileMoon, VidHide y Mixdrop).",
   "author": "tu-usuario-de-github",
   "hosts": [
     "tioanime.com",
@@ -32,7 +32,7 @@
       "label": "Servidor preferido",
       "type": "select",
       "default": "voe",
-      "hint": "El otro queda en el menú Servidor del reproductor.",
+      "hint": "Los demás servidores del capítulo quedan en el menú Servidor del reproductor.",
       "options": [
         {
           "value": "voe",
@@ -41,6 +41,30 @@
         {
           "value": "yourupload",
           "label": "YourUpload"
+        },
+        {
+          "value": "okru",
+          "label": "Okru"
+        },
+        {
+          "value": "mp4upload",
+          "label": "Mp4Upload"
+        },
+        {
+          "value": "streamwish",
+          "label": "StreamWish"
+        },
+        {
+          "value": "filemoon",
+          "label": "FileMoon"
+        },
+        {
+          "value": "vidhide",
+          "label": "VidHide"
+        },
+        {
+          "value": "mixdrop",
+          "label": "Mixdrop"
         }
       ]
     }

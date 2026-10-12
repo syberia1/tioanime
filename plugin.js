@@ -854,6 +854,86 @@ async function episodeExtras(slug, title, year, maxNum) {
   return extras;
 }
 
+// ---------- MyAnimeList (Jikan): títulos y fechas de capítulos, y un fondo de respaldo ----------
+// TioAnime separa las temporadas igual que MyAnimeList (cada temporada es otra entrada), así que la numeración de
+// capítulos coincide y los títulos romaji del sitio se encuentran bien. Se usa cuando TMDB no tiene datos del anime:
+// da el título y la fecha de cada capítulo y, si el tráiler lo trae, una imagen horizontal para el fondo de la ficha.
+// API pública de Jikan, sin llave: 3 peticiones por segundo como máximo, así que solo se usa en la ficha y con caché.
+
+async function getJson(url) {
+  let r = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    r = await kino.fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" }, timeoutMs: 8000 });
+    if (r.status === 429 && attempt === 0) {
+      await kino.sleep(800);
+      continue;
+    }
+    break;
+  }
+  if (!r.ok) throw fail("unavailable", "HTTP " + r.status + " " + url, "siteDown");
+  return r.json();
+}
+
+function jikanTitles(d) {
+  const out = [d.title, d.title_english, d.title_japanese];
+  for (const t of d.titles || []) out.push(t && t.title);
+  for (const t of d.title_synonyms || []) out.push(t);
+  return out.filter(Boolean);
+}
+
+// Entrada de MyAnimeList que corresponde al anime del sitio: el título debe compartir al menos el 70 % de las palabras
+// y, si se conocen ambos años, estar a menos de un año de diferencia.
+async function jikanFind(title, year) {
+  const q = cleanQuery(title);
+  if (q.length < 2) return null;
+  const j = await getJson("https://api.jikan.moe/v4/anime?q=" + encodeURIComponent(q) + "&limit=6");
+  const want = wordsOf(title);
+  let best = null;
+  let bestScore = 0;
+  for (const d of (j && j.data) || []) {
+    const my = d.year || (d.aired && d.aired.prop && d.aired.prop.from && d.aired.prop.from.year) || 0;
+    if (year && my && Math.abs(year - my) > 1) continue;
+    const names = wordsOf(jikanTitles(d).join(" "));
+    const score = want.length ? want.filter((w) => names.indexOf(w) >= 0).length / want.length : 0;
+    if (score >= 0.7 && score > bestScore) {
+      best = d;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+// { id, back, eps: { numero: [titulo, fecha] } } con caché (6 h si se encontró, 24 h si no). Lanza ante fallos de red.
+async function jikanFor(slug, title, year) {
+  const key = "jk1:" + slug;
+  const hit = cacheGet(key);
+  if (hit) {
+    try {
+      return JSON.parse(hit);
+    } catch (e) {
+      /* caché dañada */
+    }
+  }
+  const d = await jikanFind(title, year);
+  const out = { id: 0, back: "", eps: {} };
+  if (d) {
+    out.id = d.mal_id;
+    out.back = (d.trailer && d.trailer.images && d.trailer.images.maximum_image_url) || "";
+    for (let page = 1; page <= 3; page++) {
+      const j = await getJson("https://api.jikan.moe/v4/anime/" + d.mal_id + "/episodes?page=" + page);
+      for (const e of (j && j.data) || []) {
+        if (e.mal_id > 0 && e.mal_id < 5000) {
+          out.eps[e.mal_id] = [String(e.title || "").slice(0, 200), /^\d{4}-\d{2}-\d{2}/.test(e.aired || "") ? String(e.aired).slice(0, 10) : ""];
+        }
+      }
+      if (!(j && j.pagination && j.pagination.has_next_page)) break;
+    }
+  }
+  const raw = JSON.stringify(out);
+  if (raw.length < 60000) cacheSet(key, raw, (d ? 6 : 24) * 3600000);
+  return out;
+}
+
 // Lee la ficha del sitio: números de capítulo y datos de la serie.
 function parseAnimePage(html, slug) {
   // Números de capítulo: "var episodes = [12,11,...]" y, si no está, los enlaces /ver/slug-N.
@@ -977,10 +1057,59 @@ export async function episodes(ref) {
   } catch (e) {
     kino.log("ficha sin TMDB: " + (e && e.message));
   }
+  // MyAnimeList: títulos y fechas de capítulos si TMDB no los dio, y un fondo si la ficha sigue sin uno.
+  const needTitles = !Object.keys(extras).length;
+  if ((needTitles || !info.backdrop) && left() > 4500) {
+    try {
+      const jk = await within(jikanFor(slug, info.title || slugTitle, parseInt(info.year, 10) || 0), Math.min(5000, left() - 1500));
+      if (jk && jk !== LATE && jk.id) {
+        if (!info.backdrop && jk.back) info.backdrop = jk.back;
+        if (needTitles) {
+          for (const ep of list) {
+            const row = jk.eps[ep.ref.split(":").pop()];
+            if (!row) continue;
+            if (row[0] && !/^(episode|episodio|cap[ií]tulo)\s*\d+$/i.test(row[0])) ep.title = row[0];
+            if (row[1]) ep.airDate = row[1];
+          }
+        }
+      }
+    } catch (e) {
+      kino.log("MyAnimeList: " + (e && e.message));
+    }
+  }
   return { series: info, episodes: list };
 }
 
 // ---------- 7. Servidores: Voe y YourUpload ----------
+
+// "var videos = [["Voe","https:\/\/voe.sx\/e\/abc",0,0],["YourUpload","https:\/\/www.yourupload.com\/embed\/xyz",0,0]];"
+// Servidores que el plugin sabe abrir. Mega (cifrado) y Netu (protegido) no se pueden leer desde un plugin.
+const KIND_LABEL = {
+  voe: "Voe",
+  yourupload: "YourUpload",
+  okru: "Okru",
+  mp4upload: "Mp4Upload",
+  streamwish: "StreamWish",
+  vidhide: "VidHide",
+  filemoon: "FileMoon",
+  mixdrop: "Mixdrop",
+};
+
+// Qué servidor es, por el nombre que le da el sitio y por el dominio del embed.
+function classifyServer(name, url) {
+  const n = String(name || "").toLowerCase();
+  const host = (/^https?:\/\/([^/?#:]+)/i.exec(String(url)) || [])[1] || "";
+  const h = host.toLowerCase();
+  if (/voe/.test(n) || /(^|\.)voe\./.test(h)) return "voe";
+  if (/yourupload/.test(n) || /yourupload/.test(h)) return "yourupload";
+  if (/ok\.?ru|okru/.test(n) || /(^|\.)ok\.ru$/.test(h)) return "okru";
+  if (/mp4\s*upload/.test(n) || /mp4upload/.test(h)) return "mp4upload";
+  if (/stream\s*wish|^sw$/.test(n) || /wish|swdyu|swiftplayers/.test(h)) return "streamwish";
+  if (/vid\s*hide|file\s*lions/.test(n) || /vidhide|filelions/.test(h)) return "vidhide";
+  if (/file\s*moon|^fm$/.test(n) || /moon|byse/.test(h)) return "filemoon";
+  if (/mix\s*drop/.test(n) || /mixdrop|mdfx|mxcontent/.test(h)) return "mixdrop";
+  return null;
+}
 
 // "var videos = [["Voe","https:\/\/voe.sx\/e\/abc",0,0],["YourUpload","https:\/\/www.yourupload.com\/embed\/xyz",0,0]];"
 function listServers(html) {
@@ -1004,9 +1133,7 @@ function listServers(html) {
     const name = String(row[0] || "");
     const url = unslash(row[1] || "");
     if (!/^https?:\/\//i.test(url)) continue;
-    let kind = null;
-    if (/voe/i.test(name) || /^https?:\/\/(?:www\.)?voe\./i.test(url)) kind = "voe";
-    else if (/yourupload/i.test(name) || /yourupload\.com/i.test(url)) kind = "yourupload";
+    const kind = classifyServer(name, url);
     if (kind) out.push({ kind, url, name });
     else out.skipped.push(name);
   }
@@ -1014,7 +1141,7 @@ function listServers(html) {
 }
 
 function serverLabel(s, all) {
-  const base = s.kind === "voe" ? "Voe" : "YourUpload";
+  const base = KIND_LABEL[s.kind] || s.name || "Servidor";
   const same = all.filter((x) => x.kind === s.kind);
   return same.length > 1 ? base + " " + (same.indexOf(s) + 1) : base;
 }
@@ -1128,8 +1255,196 @@ async function yourUploadStream(embed) {
   return { url: file, headers: { Referer: "https://www.yourupload.com/", "User-Agent": UA }, alts: [] };
 }
 
+// --- Más servidores: reproductores JW empaquetados (StreamWish, VidHide, FileMoon antiguo), FileMoon actual,
+// Okru, Mp4Upload y Mixdrop ---
+
+// Dean Edwards p.a.c.k.e.r: devuelve los textos desempaquetados de todos los bloques de `text`.
+const PACKED_RE = /\}\s*\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'((?:[^'\\]|\\.)*)'\s*\.split\(\s*'\|'\s*\)/g;
+const DIGITS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+function unbase(word, base) {
+  let n = 0;
+  for (let i = 0; i < word.length; i++) {
+    const v = DIGITS.indexOf(word[i]);
+    if (v < 0 || v >= base) return NaN;
+    n = n * base + v;
+  }
+  return n;
+}
+
+function unpackAll(text) {
+  const out = [];
+  PACKED_RE.lastIndex = 0;
+  let m;
+  while ((m = PACKED_RE.exec(text)) && out.length < 8) {
+    const payload = m[1].replace(/\\'/g, "'").replace(/\\\\/g, "\\");
+    const base = parseInt(m[2], 10);
+    const keys = m[4].replace(/\\'/g, "'").split("|");
+    if (!(base >= 2 && base <= 62)) continue;
+    out.push(
+      payload.replace(/\b\w+\b/g, (w) => {
+        const i = unbase(w, base);
+        const r = Number.isNaN(i) ? "" : keys[i];
+        return r ? r : w;
+      })
+    );
+  }
+  return out;
+}
+
+function mediaIn(text) {
+  const flat = unslash(text);
+  const hls = /https?:\/\/[^\s"'<>\\]+\.m3u8[^\s"'<>\\]*/i.exec(flat);
+  const mp4 = /https?:\/\/[^\s"'<>\\]+\.mp4[^\s"'<>\\]*/i.exec(flat);
+  return { hls: hls ? hls[0] : "", mp4: mp4 ? mp4[0] : "" };
+}
+
+function b64hex(s) {
+  return b64bytes(s)
+    .map((b) => (b < 16 ? "0" : "") + b.toString(16))
+    .join("");
+}
+
+function b64std(s) {
+  let x = String(s).replace(/-/g, "+").replace(/_/g, "/");
+  while (x.length % 4) x += "=";
+  return x;
+}
+
+function embedHeaders(pageUrl) {
+  return { Referer: originOf(pageUrl) + "/", "User-Agent": UA };
+}
+
+async function jwStream(embed) {
+  const page = await getPage(embed, { Referer: BASE + "/" });
+  const texts = [page.html].concat(unpackAll(page.html));
+  let url = "";
+  for (const text of texts) {
+    const flat = unslash(text);
+    let m = /["']hls\d*["']\s*:\s*["']([^"']+)["']/.exec(flat);
+    if (m) url = abs(m[1], page.url);
+    if (!url) {
+      m = /file\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i.exec(flat);
+      if (m) url = abs(m[1], page.url);
+    }
+    if (!url) {
+      m = /sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+)["']/i.exec(flat);
+      if (m) url = abs(m[1], page.url);
+    }
+    if (!url) {
+      const media = mediaIn(flat);
+      url = media.hls || media.mp4;
+    }
+    if (url) break;
+  }
+  if (!url) throw fail("unavailable", "sin video en " + hostOf(page.url), "serverFailed");
+  return { url, headers: embedHeaders(page.url), alts: [] };
+}
+
+// FileMoon actual: la lista de reproducción llega cifrada con AES-GCM.
+async function byseStream(embed) {
+  const m = /^(https?:\/\/[^/]+)\/(?:e|d|embed|v)\/([A-Za-z0-9]+)/.exec(embed);
+  if (!m) throw fail("unavailable", "dirección no válida", "serverFailed");
+  const r = await kino.fetch(m[1] + "/api/videos/" + m[2] + "/embed/playback", {
+    headers: { "User-Agent": UA, Referer: embed, Accept: "application/json" },
+    timeoutMs: 9000,
+  });
+  if (!r.ok) throw fail("unavailable", "playback HTTP " + r.status, "serverFailed");
+  const pb = (r.json() || {}).playback;
+  if (!pb || !pb.iv || !pb.payload || !Array.isArray(pb.key_parts)) throw fail("unavailable", "playback sin datos", "serverFailed");
+  const plain = kino.crypto.decrypt("aes-256-gcm", {
+    key: pb.key_parts.map(b64hex).join(""),
+    keyEncoding: "hex",
+    iv: b64hex(pb.iv),
+    ivEncoding: "hex",
+    data: b64std(pb.payload),
+    inputEncoding: "base64",
+    outputEncoding: "utf8",
+  });
+  const media = mediaIn(plain);
+  const url = media.hls || media.mp4;
+  if (!url) throw fail("unavailable", "playback sin video", "serverFailed");
+  return { url, headers: embedHeaders(embed), alts: [] };
+}
+
+// Okru: el video está en el atributo data-options de la página (JSON dentro de JSON).
+async function okruStream(embed) {
+  const page = await getPage(embed, { Referer: BASE + "/" });
+  const m = /data-options="([^"]+)"/.exec(page.html);
+  if (!m) throw fail("unavailable", "Okru sin video (video borrado o privado)", "serverFailed");
+  let meta = null;
+  try {
+    const opts = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&#39;/g, "'"));
+    meta = JSON.parse(opts.flashvars.metadata);
+  } catch (e) {
+    throw fail("unavailable", "Okru con datos ilegibles", "serverFailed");
+  }
+  const headers = { Referer: "https://ok.ru/", "User-Agent": UA };
+  const hls = unslash(meta.hlsManifestUrl || meta.hlsMasterPlaylistUrl || meta.ondemandHls || "");
+  const order = ["ultra", "quad", "full", "hd", "sd", "low", "lowest", "mobile"];
+  const vids = (meta.videos || []).filter((v) => v && v.url).sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
+  const mp4 = vids[0] ? unslash(vids[0].url) : "";
+  const main = /^https?:\/\//.test(hls) ? hls : mp4;
+  if (!main) throw fail("unavailable", "Okru sin video", "serverFailed");
+  const alts = [];
+  if (main === hls && mp4) alts.push({ url: mp4, headers, label: "Okru MP4" });
+  return { url: main, headers, alts };
+}
+
+async function mp4uploadStream(embed) {
+  const page = await getPage(embed, { Referer: BASE + "/" });
+  const texts = [page.html].concat(unpackAll(page.html));
+  let url = "";
+  for (const text of texts) {
+    const flat = unslash(text);
+    const m =
+      /player\.src\(\s*\{[^}]*?src\s*:\s*["']([^"']+)["']/.exec(flat) ||
+      /player\.src\(\s*["']([^"']+)["']/.exec(flat) ||
+      /src\s*:\s*["'](https?:[^"']+\.mp4[^"']*)["']/.exec(flat);
+    if (m) url = abs(m[1], page.url);
+    if (!url) url = mediaIn(flat).mp4;
+    if (url) break;
+  }
+  if (!url) throw fail("unavailable", "Mp4Upload sin video", "serverFailed");
+  return { url: url.replace(/^http:\/\//i, "https://"), headers: { Referer: "https://www.mp4upload.com/", "User-Agent": UA }, alts: [] };
+}
+
+async function mixdropStream(embed) {
+  const page = await getPage(embed, { Referer: BASE + "/" });
+  const texts = [page.html].concat(unpackAll(page.html));
+  let url = "";
+  for (const text of texts) {
+    const m = /wurl\s*=\s*["']([^"']+)["']/.exec(unslash(text));
+    if (m) url = abs(m[1], page.url);
+    if (!url) url = mediaIn(text).mp4;
+    if (url) break;
+  }
+  if (!url) throw fail("unavailable", "Mixdrop sin video", "serverFailed");
+  return { url, headers: embedHeaders(page.url), alts: [] };
+}
+
+const STREAMERS = {
+  voe: [voeStream],
+  yourupload: [yourUploadStream],
+  okru: [okruStream],
+  mp4upload: [mp4uploadStream],
+  streamwish: [jwStream],
+  vidhide: [jwStream],
+  filemoon: [jwStream, byseStream],
+  mixdrop: [mixdropStream],
+};
+
 async function streamFor(s) {
-  return s.kind === "voe" ? voeStream(s.url) : yourUploadStream(s.url);
+  let last = null;
+  for (const fn of STREAMERS[s.kind] || []) {
+    try {
+      return await fn(s.url);
+    } catch (e) {
+      last = e;
+      kino.log("resolve: " + s.kind + " (" + (fn.name || "lector") + ") falló: " + (e && e.message));
+    }
+  }
+  throw last || fail("unavailable", "servidor sin lector", "serverFailed");
 }
 
 // ---------- 8. resolve ----------
@@ -1156,18 +1471,20 @@ export async function resolve(ref) {
   if (!all.length) {
     const others = (all.skipped || []).filter((n, i, a) => n && a.indexOf(n) === i).slice(0, 4);
     const text =
-      (lang() === "en" ? "This episode has no Voe or YourUpload." : "Este capítulo no tiene Voe ni YourUpload.") +
+      (lang() === "en" ? "This episode has no compatible servers." : "Este capítulo no tiene servidores compatibles.") +
       (others.length ? (lang() === "en" ? " Available: " : " Disponibles: ") + others.join(", ") + "." : "");
-    throw failWith("not_found", "sin Voe ni YourUpload (otros: " + others.join(", ") + ")", text);
+    throw failWith("not_found", "sin servidores compatibles (otros: " + others.join(", ") + ")", text);
   }
 
   let order;
   if (p.idx >= 0) {
     order = all[p.idx] ? [all[p.idx]] : [];
   } else {
+    // Primero el servidor preferido; el resto en el orden del sitio.
     const pref = String(kino.config.get("server") || "voe");
     order = all.slice().sort((a, b) => (a.kind === pref ? 0 : 1) - (b.kind === pref ? 0 : 1));
   }
+  const t0 = Date.now();
 
   let main = null;
   let used = null;
@@ -1176,6 +1493,11 @@ export async function resolve(ref) {
   for (const s of order) {
     if (main) {
       rest.push(s);
+      continue;
+    }
+    // Kino corta resolve a los 20 s: si ya se gastaron 12, no se intenta otro servidor.
+    if (Date.now() - t0 > 12000) {
+      failures.push({ label: serverLabel(s, all), reason: lang() === "en" ? "no time left" : "sin tiempo", detail: "sin tiempo" });
       continue;
     }
     try {
